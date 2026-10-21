@@ -3,5 +3,13 @@
     "tool": "refund_policy",
     "kind": "timeout",
     "expected_substring": "contact support"
+  },
+  {
+    "name": "stale-customer-context-then-policy-timeout",
+    "faults": [
+      {"tool": "customer_context", "kind": "exception"},
+      {"tool": "refund_policy", "kind": "timeout"}
+    ],
+    "expected_substring": "contact support"
   }
 ]

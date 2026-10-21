@@ -164,11 +164,27 @@ def instrument_tool_calls(*faults: ToolFault) -> ToolFaultController:
     return ToolFaultController(faults=tuple(faults))
 
 
-class _ArmRequest(BaseModel):
+class _ArmFault(BaseModel):
     tool: str = Field(min_length=1, max_length=100)
     kind: FaultKind
     delay_seconds: float = Field(default=0, ge=0, le=30)
     every_n_calls: int = Field(default=1, ge=1, le=100)
+
+
+class _ArmRequest(BaseModel):
+    faults: list[_ArmFault] | None = Field(default=None, min_length=1, max_length=5)
+    tool: str | None = Field(default=None, min_length=1, max_length=100)
+    kind: FaultKind | None = None
+    delay_seconds: float = Field(default=0, ge=0, le=30)
+    every_n_calls: int = Field(default=1, ge=1, le=100)
+
+    def as_faults(self) -> list[_ArmFault]:
+        if self.faults is not None:
+            return self.faults
+        if self.tool is None or self.kind is None:
+            raise ValueError("provide either a faults array or a single tool and kind")
+        return [_ArmFault(tool=self.tool, kind=self.kind, delay_seconds=self.delay_seconds,
+                          every_n_calls=self.every_n_calls)]
 
 
 def instrument(app: FastAPI, *, token: str, enabled: bool = False) -> ToolFaultController:
@@ -202,8 +218,9 @@ def instrument(app: FastAPI, *, token: str, enabled: bool = False) -> ToolFaultC
         authorize(authorization)
         validate_session_id(session_id)
         try:
-            controller.arm(session_id, (ToolFault(tool=request.tool, kind=request.kind,
-                delay_seconds=request.delay_seconds, every_n_calls=request.every_n_calls),))
+            controller.arm(session_id, tuple(ToolFault(tool=fault.tool, kind=fault.kind,
+                delay_seconds=fault.delay_seconds, every_n_calls=fault.every_n_calls)
+                for fault in request.as_faults()))
         except ValueError as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
         return {"session_id": session_id, "armed": True}
@@ -254,9 +271,9 @@ async def verify_remote_instrumentation(client: httpx.AsyncClient, control_url: 
 
 
 async def arm_remote_fault(client: httpx.AsyncClient, control_url: str, token: str,
-                           session_id: str, fault: dict[str, Any]) -> None:
+                           session_id: str, faults: list[dict[str, Any]]) -> None:
     response = await client.put(f"{control_url}/sessions/{session_id}",
-        headers={"Authorization": f"Bearer {token}"}, json=fault)
+        headers={"Authorization": f"Bearer {token}"}, json={"faults": faults})
     response.raise_for_status()
 
 

@@ -169,6 +169,60 @@ async def test_runner_scores_confirmed_instrumented_fault_with_explicit_invarian
 
 
 @pytest.mark.asyncio
+async def test_runner_scores_ordered_fault_chain_with_provenance_and_cleanup(tmp_path, monkeypatch):
+    target = FastAPI()
+    token = "integration-test-token-1234567890"
+    controller = instrument(target, token=token, enabled=True)
+
+    @target.post("/chain")
+    async def chain():
+        try:
+            await controller.invoke("customer_context", lambda: "context")
+        except RuntimeError:
+            pass
+        try:
+            await controller.invoke("refund_policy", lambda: "policy")
+        except TimeoutError:
+            return {"answer": "Please contact support."}
+        return {"answer": "Please contact support."}
+
+    original_client = httpx.AsyncClient
+    monkeypatch.setattr("breakmybot.instrumentation.httpx.AsyncClient",
+        lambda *args, **kwargs: original_client(*args, **kwargs, transport=ASGITransport(app=target)))
+
+    async def target_invoke(url, path, method, payload, timeout, *, docker_mode=False, headers=None):
+        async with original_client(transport=ASGITransport(app=target), base_url=url) as client:
+            response = await client.request(method, path, json=payload, headers=headers)
+        return response.status_code, response.text, 1.0, response.headers.get("content-type", "")
+
+    monkeypatch.setattr(runner, "invoke", target_invoke)
+    monkeypatch.setenv("BREAKMYBOT_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("BREAKMYBOT_DOCKER_MODE", "false")
+    monkeypatch.setenv("BREAKMYBOT_INSTRUMENTATION_TOKEN", token)
+    request = RunRequest(target_url="http://127.0.0.1:8001", endpoint_path="/chain", method="POST",
+        profile="quick", allow_repeated_post=True,
+        instrumented_assessment={"auth_env": "BREAKMYBOT_INSTRUMENTATION_TOKEN", "chains": [{
+            "name": "context-then-policy", "faults": [
+                {"tool": "customer_context", "kind": "exception"},
+                {"tool": "refund_policy", "kind": "timeout"}],
+            "expected_substring": "contact support"}]})
+    run = RunRecord(target_url=str(request.target_url), endpoint_path=request.endpoint_path,
+        method=request.method, profile=request.profile)
+    store.save(run)
+
+    result = await runner.execute(run.id, request)
+
+    tool_result = next(item for item in result.scenarios if item.category == "Tool reliability")
+    assert tool_result.status == "PASSED", tool_result.model_dump_json()
+    assert tool_result.evidence["fault_injected"] is True
+    assert tool_result.evidence["faults"] == [
+        {"tool": "customer_context", "kind": "exception"},
+        {"tool": "refund_policy", "kind": "timeout"}]
+    assert tool_result.evidence["cleanup_succeeded"] is True
+    assert controller._sessions == {}
+
+
+@pytest.mark.asyncio
 async def test_instrumented_control_token_requires_https_for_non_loopback_target(monkeypatch):
     monkeypatch.setenv("BREAKMYBOT_INSTRUMENTATION_TOKEN", "x" * 40)
     request = RunRequest(target_url="http://192.0.2.10:8443", endpoint_path="/chat", method="GET",

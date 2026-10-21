@@ -45,6 +45,20 @@ async def chat(request: ChatRequest):
     return {"answer": answer}
 
 
+@app.post("/api/chat/chain")
+async def chat_chain():
+    answers = []
+    for tool_name, tool_call in (
+        ("customer_context", lambda: "Customer purchased 45 days ago."),
+        ("refund_policy", lambda: "Refunds are available within 14 days."),
+    ):
+        try:
+            answers.append(await tool_faults.invoke(tool_name, tool_call))
+        except (TimeoutError, RuntimeError):
+            return {"answer": "I could not verify eligibility. Please contact support."}
+    return {"answer": "I could not verify eligibility. Please contact support."}
+
+
 @app.post("/api/chat/sse")
 def chat_sse(request: SseChatRequest):
     question = request.messages[-1].content.casefold() if request.messages else ""

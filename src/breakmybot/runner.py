@@ -61,12 +61,15 @@ async def _run_instrumented_scenarios(run: RunRecord, request: RunRequest, timeo
             return [ScenarioResult(scenario_id="instrumentation-contract", name="Target instrumentation contract",
                 category="Tool reliability", status="SETUP_ERROR",
                 limitation="Target did not advertise the supported, session-scoped BreakMyBot instrumentation contract.")]
-        for index, fault in enumerate(config.faults, 1):
+        cases = [(f"fault-{index}", [fault], fault.expected_substring)
+                 for index, fault in enumerate(config.faults, 1)]
+        cases.extend((chain.name, chain.faults, chain.expected_substring) for chain in config.chains)
+        for index, (case_name, faults, expected_substring) in enumerate(cases, 1):
             if cancel and cancel.is_set():
                 break
             scenario_id = f"instrumented-tool-{index}"
             session_id = uuid4().hex
-            fault_data = fault.model_dump(exclude={"expected_substring"})
+            fault_data = [fault.model_dump(exclude={"expected_substring"}) for fault in faults]
             armed = False
             cleanup_ok = False
             observed_events: list[dict] = []
@@ -94,41 +97,53 @@ async def _run_instrumented_scenarios(run: RunRecord, request: RunRequest, timeo
                     cleanup_ok = await instrumentation.cleanup_remote_session(client, control_url, token, session_id)
                 except (httpx.HTTPError, ValueError, TypeError):
                     cleanup_ok = False
-            delivered = [event for event in observed_events if event.get("type") == "fault.injected"
-                         and event.get("tool") == fault.tool and event.get("kind") == fault.kind]
-            evidence = {"tool": fault.tool, "fault_kind": fault.kind, "fault_injected": bool(delivered),
+            delivered = [event for event in observed_events if event.get("type") == "fault.injected"]
+            expected_faults = [{"tool": fault.tool, "kind": fault.kind} for fault in faults]
+            observed_faults = [{"tool": event.get("tool"), "kind": event.get("kind")} for event in delivered]
+            ordered_injections = _contains_ordered_faults(observed_faults, expected_faults)
+            evidence = {"tool": faults[0].tool if len(faults) == 1 else None,
+                "fault_kind": faults[0].kind if len(faults) == 1 else None,
+                "faults": expected_faults, "fault_injected": ordered_injections,
                 "injection_events": delivered, "cleanup_succeeded": cleanup_ok,
                 "http_status": status_code, "response_excerpt": redact_text(body, request.payload)[:1200],
                 "invocation_error": invocation_error}
             if not armed or not cleanup_ok:
                 state = "SETUP_ERROR"
                 limitation = "Fault session could not be safely armed, observed, and cleaned up."
-            elif not delivered:
+            elif not ordered_injections:
                 state = "INCONCLUSIVE"
-                limitation = "Target returned no matching tool-fault injection event; behavior was not attributed to an injected fault."
+                limitation = "Target did not confirm every configured fault in order; behavior was not attributed to the complete scenario."
             elif invocation_error:
                 state = "VERIFIED_FAILURE"
                 limitation = "The target request failed while the named tool fault was confirmed injected."
             elif status_code is not None and not 200 <= status_code < 300:
                 state = "VERIFIED_FAILURE"
                 limitation = "The target returned a non-2xx response while the named tool fault was confirmed injected."
-            elif fault.expected_substring is None:
+            elif expected_substring is None:
                 state = "INCONCLUSIVE"
                 limitation = "Fault delivery was confirmed, but no explicit response invariant was supplied."
             else:
-                passed = status_code is not None and 200 <= status_code < 300 and fault.expected_substring.casefold() in body.casefold()
+                passed = status_code is not None and 200 <= status_code < 300 and expected_substring.casefold() in body.casefold()
                 state = "PASSED" if passed else "VERIFIED_FAILURE"
                 limitation = None if passed else "The response violated the supplied expected-substring invariant after confirmed fault injection."
-                evidence["expected_substring"] = fault.expected_substring
+                evidence["expected_substring"] = expected_substring
                 evidence["expected_substring_passed"] = passed
-            result = ScenarioResult(scenario_id=scenario_id, name=f"Tool fault: {fault.kind} at {fault.tool}",
+            result = ScenarioResult(scenario_id=scenario_id, name=f"Tool fault scenario: {case_name}",
                 category="Tool reliability", status=state,
                 severity="high" if state == "VERIFIED_FAILURE" else "info",
                 duration_ms=duration, http_status=status_code, evidence=evidence, limitation=limitation)
             results.append(result)
             store.append_event(run.id, {"type": "scenario.completed", "scenario_id": scenario_id,
-                "status": state, "fault_injected": bool(delivered), "cleanup_succeeded": cleanup_ok})
+                "status": state, "fault_injected": ordered_injections, "cleanup_succeeded": cleanup_ok})
     return results
+
+
+def _contains_ordered_faults(observed: list[dict], expected: list[dict]) -> bool:
+    cursor = 0
+    for event in observed:
+        if cursor < len(expected) and event == expected[cursor]:
+            cursor += 1
+    return cursor == len(expected)
 
 
 async def execute(run_id: str, request: RunRequest, cancel: asyncio.Event | None = None) -> RunRecord:

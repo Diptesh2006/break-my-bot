@@ -4,7 +4,7 @@ from datetime import datetime, timezone
 from typing import Any, Literal
 from uuid import uuid4
 
-from pydantic import BaseModel, Field, HttpUrl, field_validator
+from pydantic import BaseModel, Field, HttpUrl, field_validator, model_validator
 
 ResultState = Literal["PASSED", "VERIFIED_FAILURE", "INCONCLUSIVE", "SETUP_ERROR", "UNSUPPORTED", "SKIPPED"]
 
@@ -33,9 +33,22 @@ class InstrumentedToolFault(BaseModel):
     every_n_calls: int = Field(default=1, ge=1, le=100)
 
 
+class InstrumentedFaultChain(BaseModel):
+    name: str = Field(min_length=1, max_length=120)
+    faults: list[InstrumentedToolFault] = Field(min_length=2, max_length=5)
+    expected_substring: str | None = Field(default=None, max_length=1000)
+
+
 class InstrumentedAssessment(BaseModel):
     auth_env: str = Field(pattern=r"^BREAKMYBOT_INSTRUMENTATION_[A-Z0-9_]+$")
-    faults: list[InstrumentedToolFault] = Field(min_length=1, max_length=10)
+    faults: list[InstrumentedToolFault] = Field(default_factory=list, max_length=10)
+    chains: list[InstrumentedFaultChain] = Field(default_factory=list, max_length=5)
+
+    @model_validator(mode="after")
+    def require_scenario(self):
+        if not self.faults and not self.chains:
+            raise ValueError("instrumented assessment requires at least one fault or fault chain")
+        return self
 
 
 class DiscoveryResult(BaseModel):

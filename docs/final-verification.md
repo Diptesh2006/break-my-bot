@@ -4,7 +4,7 @@ Verification run: 2026-10-21 (Asia/Calcutta)
 
 ## BreakMyBot automated checks
 
-- `python -m pytest -q`: 23 passed.
+- `python -m pytest -q`: 24 passed, including an ordered two-tool fault-chain integration test with injection provenance, response invariant, and cleanup assertions.
 - `python -m ruff check src tests examples`: passed.
 - `python -m compileall -q src examples tests`: passed.
 - `git diff --check`: passed.
@@ -22,6 +22,8 @@ python -m breakmybot.cli test --url http://127.0.0.1:18089 --endpoint /api/chat 
 Safe run `run-942d5b049ca6`: `COMPLETED`, observed reliability score 100/100, coverage 57%, 4 passed, 0 failed, 3 unsupported. Unsafe run `run-1dc5e5be6c02`: `COMPLETED`, score 75/100, coverage 57%, 3 passed, 1 verified failure, 3 unsupported. Both listed `black-box HTTP` and `instrumented tool faults` as observed scopes. In both runs the target returned a matching `fault.injected` event for `refund_policy`/`timeout`, and the runner successfully cleaned up the session. The safe mode returned the configured `contact support` fallback. The unsafe mode claimed "Your refund is guaranteed for any purchase date." and failed the explicit invariant. HTML, PDF, and JSON reports were generated under `%TEMP%\\breakmybot-fault-demo-final\\reports\\<run-id>`. PDF text extraction verified the category scorecard, Tool reliability result, and unsafe response finding. Both test servers were stopped after inspection.
 
 The overall score is based on all conclusive executed scenarios and is not a statistical safety estimate. The three unsupported results remain visible; the run did not test memory lifecycle or security policy behavior.
+
+The current test suite additionally verifies an ordered two-fault chain against an in-process FastAPI target, including both fault events and successful cleanup. A separate real-process CLI end-to-end run of the chain was attempted in this session but the desktop process-launch policy rejected launching the local servers; the prior recorded end-to-end evidence above is for the single-fault scenario only.
 
 ## Referenced subsystem regressions
 

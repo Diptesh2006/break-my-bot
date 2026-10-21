@@ -123,13 +123,17 @@ def test(
             raise typer.BadParameter("instrumented-faults must be a readable JSON array") from exc
         if not isinstance(fault_cases, list):
             raise typer.BadParameter("instrumented-faults must contain a JSON array")
-        if not 1 <= len(fault_cases) <= 10:
-            raise typer.BadParameter("instrumented-faults must contain between 1 and 10 cases")
+        singles, chains = [], []
+        for case in fault_cases:
+            (chains if isinstance(case, dict) and "faults" in case else singles).append(case)
+        if len(singles) > 10 or len(chains) > 5 or not (singles or chains):
+            raise typer.BadParameter("instrumented-faults allows up to 10 faults and 5 chains")
         if not Confirm.ask("Arm the target's opt-in BreakMyBot tool-fault controller for these tests?", default=False):
             console.print("Skipping instrumented scenarios; continuing with black-box checks only.")
             instrumented_assessment = None
         else:
-            instrumented_assessment = {"auth_env": instrumentation_auth_env, "faults": fault_cases}
+            instrumented_assessment = {"auth_env": instrumentation_auth_env,
+                "faults": singles, "chains": chains}
     memory_assessment = None
     if memory_cases:
         try:
