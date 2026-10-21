@@ -62,6 +62,7 @@ def test(
     memory_cases: Path | None = typer.Option(None, "--memory-cases", help="JSON array of approved MemoryScope reference cases"),
     memory_agent_path: str | None = typer.Option(None, "--memory-agent-path", help="SSE chat path on the same target origin"),
     memory_auth_env: str | None = typer.Option(None, "--memory-auth-env", help="MemoryScope agent auth environment variable name"),
+    plan_with_nrouter: bool = typer.Option(False, "--plan-with-nrouter", help="Opt in to send endpoint metadata to the configured nRouter planner"),
 ):
     """Discover and run bounded black-box HTTP checks."""
     if profile not in {"quick", "standard", "deep"}:
@@ -121,10 +122,12 @@ def test(
         consent = Confirm.ask("MemoryScope will send these references and the target answers to the configured nRouter judge. Consent?", default=False)
         memory_assessment = {"agent_path": memory_agent_path or endpoint, "cases": cases,
             "send_to_nrouter": consent, "auth_env": memory_auth_env}
+    if plan_with_nrouter and not Confirm.ask("Send target name, endpoint path and payload field names to nRouter for scenario planning?", default=False):
+        plan_with_nrouter = False
     created = api_request("POST", "/api/runs", json={"target_url": url, "endpoint_path": endpoint,
         "method": method, "payload": payload, "profile": profile, "application_name": discovered.get("application_name"),
         "expected_substring": expected, "allow_repeated_post": allow_repeated_post, "auth_env": auth_env,
-        "memory_assessment": memory_assessment})
+        "memory_assessment": memory_assessment, "use_nrouter_planner": plan_with_nrouter})
     run_id = created["run_id"]
     console.print(f"Assessment started: {run_id}")
     while True:
@@ -139,6 +142,7 @@ def test(
     console.print(f"\n[bold]💥 BREAKMYBOT — TEST {run['status']}[/bold]")
     console.print(f"HTTP reliability score: {score}/100" if score is not None else "HTTP reliability score: Not established")
     console.print(f"Coverage: {run['scoring'].get('coverage_percent', 0)}%")
+    console.print(f"Scenario planner: {run.get('planning', {}).get('status', 'not requested')} ({len(run.get('planning', {}).get('scenarios', []))} proposals; none automatically executed)")
     counts = run["scoring"]["scenario_counts"]
     console.print(f"Passed: {counts['PASSED']} · Failed: {counts['VERIFIED_FAILURE']} · Unsupported: {counts['UNSUPPORTED']}")
     console.print(run["scoring"]["warning"])
