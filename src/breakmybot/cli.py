@@ -98,16 +98,27 @@ def test(
         endpoint, method, template = selected["path"], selected["method"], selected["payload_template"]
         console.print(f"Selected endpoint: {method} {endpoint}")
     else:
-        endpoint = endpoint or Prompt.ask("Invocation endpoint path", default="/api/chat")
-        method, template = "POST", {"message": "Hello. Please reply briefly."}
+        endpoint = endpoint or Prompt.ask("Invocation endpoint path (required; no suitable OpenAPI operation found)")
+        method = Prompt.ask("HTTP method", choices=["GET", "POST", "PUT", "PATCH"], default="POST")
+        template = {}
     if payload_json:
         try:
             payload = json.loads(payload_json)
         except json.JSONDecodeError as exc:
             raise typer.BadParameter("payload-json must be valid JSON") from exc
-    else:
+    elif template:
         payload = template
         console.print(f"Schema-derived sample payload: {json.dumps(payload, ensure_ascii=False)}")
+    elif method == "GET":
+        payload = {}
+    else:
+        payload_text = Prompt.ask("Request JSON payload (schema unavailable; provide a valid body)")
+        try:
+            payload = json.loads(payload_text)
+        except json.JSONDecodeError as exc:
+            raise typer.BadParameter("payload JSON must be valid JSON") from exc
+        if not isinstance(payload, dict):
+            raise typer.BadParameter("payload JSON must be an object")
     if method != "GET" and not Confirm.ask("Confirm endpoint and payload are safe for a test invocation", default=False):
         console.print("Cancelled before sending the target request.")
         raise typer.Exit(code=4)

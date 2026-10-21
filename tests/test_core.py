@@ -353,6 +353,19 @@ def test_openapi_discovery_prefers_chat_and_builds_payload():
     assert candidates[0].payload_template == {"input": "Hello. Please reply briefly."}
 
 
+def test_openapi_endpoint_ranking_prefers_schema_with_conversational_input():
+    spec = {"paths": {
+        "/api/status": {"post": {"summary": "Agent status", "requestBody": {"content": {
+            "application/json": {"schema": {"type": "object", "properties": {"verbose": {"type": "boolean"}}}}}}}},
+        "/api/chat": {"post": {"summary": "Chat with the agent", "requestBody": {"content": {
+            "application/json": {"schema": {"type": "object", "required": ["messages"],
+                "properties": {"messages": {"type": "array", "items": {"type": "object"}}}}}}}}},
+    }}
+    candidates = identify_endpoints(spec)
+    assert candidates[0].path == "/api/chat"
+    assert candidates[0].payload_template == {"messages": [{"role": "user", "content": "Hello. Please reply briefly."}]}
+
+
 def test_score_excludes_unsupported_from_passes_and_keeps_coverage_separate():
     run = RunRecord(target_url="http://localhost:8000", endpoint_path="/chat", method="POST", profile="standard")
     run.scenarios = [

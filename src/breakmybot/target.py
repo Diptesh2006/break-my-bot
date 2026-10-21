@@ -116,6 +116,13 @@ def identify_endpoints(spec: dict) -> list[EndpointCandidate]:
             if "requestbody" in operation:
                 score += 2
             if score:
+                schema = operation.get("requestBody", {}).get("content", {})
+                json_schema = schema.get("application/json", {}).get("schema", {})
+                props = _resolve_ref(spec, json_schema).get("properties", {}) if isinstance(json_schema, dict) else {}
+                if any(name in props for name in ("messages", "message", "input", "prompt", "query")):
+                    score += 3
+                if method == "GET":
+                    score -= 1
                 candidates.append(EndpointCandidate(method=method, path=path,
                     description=operation.get("summary", operation.get("description", "")),
                     score=score, payload_template=payload_from_operation(spec, operation)))
