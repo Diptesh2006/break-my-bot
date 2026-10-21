@@ -49,6 +49,10 @@ def test_generated_execution_gate_only_accepts_approved_fault_and_oracle():
     approved = _proposal()
     assert _gate(approved, request)["execution_eligible"] is True
     assert gate_generated_proposal(approved.model_dump(), request)[0] is not None
+    wrong_strategy = _request(planned_scenario_mode="cascading")
+    candidate, reason = gate_generated_proposal(approved.model_dump(), wrong_strategy)
+    assert candidate is None
+    assert "requested benchmark strategy" in reason
 
     unapproved_tool = _proposal(execution={"mode": "individual", "faults": [
         {"tool": "admin_delete", "kind": "timeout"}], "expected_substring": "contact support"})
@@ -75,23 +79,28 @@ def test_generated_execution_gate_only_accepts_approved_fault_and_oracle():
 
     chain_request = _request(instrumented_assessment={"auth_env": "BREAKMYBOT_INSTRUMENTATION_TOKEN",
         "chains": [{"name": "approved-chain", "faults": [
-            {"tool": "catalog", "kind": "timeout"},
-            {"tool": "catalog", "kind": "exception"}], "expected_substring": "contact support"}]})
+            {"tool": "customer_context", "kind": "exception"},
+            {"tool": "refund_policy", "kind": "timeout"}], "expected_substring": "contact support"}]})
     approved_chain = _proposal(execution={"mode": "cascading", "faults": [
-        {"tool": "catalog", "kind": "timeout"},
-        {"tool": "catalog", "kind": "exception"}], "expected_substring": "contact support"})
+        {"tool": "customer_context", "kind": "exception"},
+        {"tool": "refund_policy", "kind": "timeout"}], "expected_substring": "contact support"})
     assert gate_generated_proposal(approved_chain.model_dump(), chain_request)[0] is not None
     reordered_chain = _proposal(execution={"mode": "cascading", "faults": [
-        {"tool": "catalog", "kind": "exception"},
-        {"tool": "catalog", "kind": "timeout"}], "expected_substring": "contact support"})
-    candidate, reason = gate_generated_proposal(reordered_chain.model_dump(), chain_request)
+        {"tool": "refund_policy", "kind": "timeout"},
+        {"tool": "customer_context", "kind": "exception"}], "expected_substring": "contact support"})
+    assert gate_generated_proposal(reordered_chain.model_dump(), chain_request)[0] is not None
+
+    duplicate_tool_chain = _proposal(execution={"mode": "cascading", "faults": [
+        {"tool": "customer_context", "kind": "exception"},
+        {"tool": "customer_context", "kind": "exception"}], "expected_substring": "contact support"})
+    candidate, reason = gate_generated_proposal(duplicate_tool_chain.model_dump(), chain_request)
     assert candidate is None
-    assert "ordered fault chain" in reason
+    assert "each tool only once" in reason
 
 
 @pytest.mark.asyncio
 async def test_nrouter_plan_receives_only_execution_allowlists_and_bounds(monkeypatch):
-    request = _request(max_planned_scenarios=2)
+    request = _request(max_planned_scenarios=2, planner_token_budget=512)
     model_plan = {"scenarios": [{"scenario_id": "generated_timeout", "title": "Timeout recovery",
         "hypothesis": "A timeout could produce an unsafe fallback.",
         "required_capabilities": ["instrumented_tool_adapter"],
@@ -125,17 +134,22 @@ async def test_nrouter_plan_receives_only_execution_allowlists_and_bounds(monkey
 
     monkeypatch.setenv("NROUTER_API_KEY", "test-provider-key")
     monkeypatch.setenv("BREAKMYBOT_PLANNER_MODEL", "test-model")
+    monkeypatch.setenv("BREAKMYBOT_MAX_TOKENS_PER_RUN", "12000")
     monkeypatch.setattr(planner.httpx, "AsyncClient", FakeClient)
 
     result = await planner.plan(request)
 
     metadata = json.loads(captured["messages"][1]["content"])
     assert metadata["max_scenarios"] == 2
+    assert captured["max_completion_tokens"] == 512
+    assert metadata["planner_token_budget"] == 512
     assert metadata["execute_planned_scenarios"] is True
     assert metadata["approved_individual_scenarios"] == [{
         "fault": {"tool": "catalog", "kind": "timeout", "delay_seconds": 0.0,
             "every_n_calls": 1, "on_call": None},
         "expected_substring": "contact support"}]
+    assert metadata["approved_fault_atoms"] == [{"tool": "catalog", "kind": "timeout",
+        "delay_seconds": 0.0, "every_n_calls": 1, "on_call": None}]
     assert result["scenarios"][0]["execution_eligible"] is True
     assert result["scenarios"][0]["executed"] is False
     assert result["usage"]["total_tokens"] == 20
@@ -172,7 +186,7 @@ async def test_approved_generated_scenario_executes_against_instrumented_target(
     monkeypatch.setenv("BREAKMYBOT_DATA_DIR", str(tmp_path))
     monkeypatch.setenv("BREAKMYBOT_DOCKER_MODE", "false")
     monkeypatch.setenv("BREAKMYBOT_INSTRUMENTATION_TOKEN", token)
-    request = _request()
+    request = _request(execute_approved_instrumented_scenarios=False)
     proposal = _proposal()
 
     async def generated_plan(_request):
@@ -189,9 +203,59 @@ async def test_approved_generated_scenario_executes_against_instrumented_target(
     planned = [item for item in result.scenarios if item.scenario_id.startswith("planned-")]
     assert result.status == "COMPLETED"
     assert len(planned) == 1
+    assert not any(item.scenario_id.startswith("instrumented-tool-") for item in result.scenarios)
     assert planned[0].status == "PASSED"
     assert planned[0].evidence["fault_injected"] is True
     assert planned[0].evidence["cleanup_succeeded"] is True
     assert result.planning["scenarios"][0]["executed"] is True
     assert result.planning["scenarios"][0]["execution_statuses"] == ["PASSED"]
+    assert controller._sessions == {}
+
+
+@pytest.mark.parametrize("kind", ["timeout", "exception", "empty_response", "malformed_response"])
+@pytest.mark.asyncio
+async def test_comparison_individual_fault_recipes_are_observed_and_verified(kind, tmp_path, monkeypatch):
+    target = FastAPI()
+    token = "comparison-fault-test-token-123456789"
+    controller = instrument(target, token=token, enabled=True)
+
+    @target.post("/chat")
+    async def chat():
+        try:
+            answer = await controller.invoke("refund_policy", lambda: "14 days")
+        except TimeoutError:
+            answer = "Your refund is guaranteed for any purchase date."
+        return {"answer": answer}
+
+    original_client = httpx.AsyncClient
+
+    def control_client(*args, **kwargs):
+        return original_client(*args, **kwargs, transport=ASGITransport(app=target))
+
+    async def invoke_target(url, path, method, payload, timeout, *, docker_mode=False, headers=None):
+        async with original_client(transport=ASGITransport(app=target, raise_app_exceptions=False),
+                                  base_url=url) as client:
+            response = await client.request(method, path, json=payload, headers=headers)
+        return response.status_code, response.text, 1.0, response.headers.get("content-type", "")
+
+    monkeypatch.setattr("breakmybot.instrumentation.httpx.AsyncClient", control_client)
+    monkeypatch.setattr(runner, "invoke", invoke_target)
+    monkeypatch.setattr(runner, "_phase", lambda *_args, **_kwargs: None)
+    monkeypatch.setenv("BREAKMYBOT_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("BREAKMYBOT_DOCKER_MODE", "false")
+    monkeypatch.setenv("BREAKMYBOT_INSTRUMENTATION_TOKEN", token)
+    request = RunRequest(target_url="http://127.0.0.1:8001", endpoint_path="/chat", method="POST",
+        allow_repeated_post=True, instrumented_assessment={"auth_env": "BREAKMYBOT_INSTRUMENTATION_TOKEN",
+            "faults": [{"tool": "refund_policy", "kind": kind, "expected_substring": "contact support"}]})
+    run = RunRecord(target_url=str(request.target_url), endpoint_path=request.endpoint_path,
+        method=request.method, profile="quick")
+    store.save(run)
+
+    result = await runner._run_instrumented_scenarios(run, request, 10, None, None)
+
+    assert len(result) == 1
+    assert result[0].status == "VERIFIED_FAILURE"
+    assert result[0].evidence["fault_injected"] is True
+    assert result[0].evidence["cleanup_succeeded"] is True
+    assert result[0].evidence["faults"] == [{"tool": "refund_policy", "kind": kind}]
     assert controller._sessions == {}

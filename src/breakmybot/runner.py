@@ -366,7 +366,9 @@ async def execute(run_id: str, request: RunRequest, cancel: asyncio.Event | None
                     limitation="Baseline target invocation did not complete; instrumented scenarios were not started."))
             else:
                 _phase(run.id, "INSTRUMENTED_FAULTS")
-                run.scenarios.extend(await _run_instrumented_scenarios(run, request, timeout, headers, cancel))
+                if request.execute_approved_instrumented_scenarios:
+                    run.scenarios.extend(await _run_instrumented_scenarios(
+                        run, request, timeout, headers, cancel))
                 if request.execute_planned_scenarios:
                     _phase(run.id, "AI_PLANNED_SCENARIOS",
                         max_scenarios=request.max_planned_scenarios)

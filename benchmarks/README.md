@@ -2,7 +2,7 @@
 
 `verify_demo.py` exercises the real BreakMyBot queue and runner against the isolated demo agent. It runs two repetitions each of a passing current-memory control, a seeded stale-memory bug, a single injected tool timeout, and an ordered two-tool failure chain. It emits the actual run IDs, expected statuses, captured evidence, execution success, simple reproducibility, local request timing, and a JSON artifact.
 
-This is a deterministic product regression benchmark, not a comparison of research methods. The current nRouter planner returns hypotheses that are capability-gated and explicitly unexecuted; the harness does not pretend those proposals were tested. It reports zero provider tokens/cost because it makes no model calls. Fixed-suite versus LLM-generated versus cascading-scenario strategy comparisons, broad false-positive estimates, and cost comparisons require an executable scenario representation and a pre-registered broader experiment.
+This deterministic product regression is distinct from the opt-in strategy comparison below. It reports zero provider tokens/cost because it makes no model calls. Neither harness estimates a general false-positive rate or establishes strategy superiority.
 
 Keep all three processes on loopback. Use separate terminals from the repository root and set the same disposable test token in the API, worker, and demo agent:
 
@@ -35,3 +35,17 @@ python benchmarks/verify_demo.py --api-url http://127.0.0.1:18088 --target-url h
 ```
 
 The harness refuses non-loopback HTTP endpoints, checks API and target health first, and resets the demo memory to its current value when it finishes. It writes only to the requested output path. Stop the demo services after use. Never run these mutating fixture endpoints on a real application.
+
+## Fixed vs generated strategy pilot
+
+`compare_strategies.py` compares four bounded arms on the same loopback demo application: fixed individual tool faults, nRouter-generated individual faults, fixed cascading fault recipes, and BreakMyBot-generated cascading recipes. Each arm gets four scenario recipes times the selected repetition count. The generated arms receive one proposal and may execute at most one scenario per assessment; they use the same exact fault settings and response oracle allowlist as the fixed arm. Cascade proposals may compose two distinct approved fault atoms. Every assessment also performs the same baseline invocation. The generated arms use a per-call completion-token cap (768 by default); provider-reported usage and cost are recorded, and absent cost data stays null.
+
+This is an exploratory demo-agent pilot, not a powered study. It isolates tool-fault strategies; the deterministic harness above separately tests stale memory. Do not infer performance on arbitrary applications or claim superiority from the default two repetitions. A candidate that fails schema/capability/allowlist validation consumes its planned attempt but does not count as a valid target scenario.
+
+Keep nRouter credentials out of command history and source control. Configure `NROUTER_API_KEY` and `BREAKMYBOT_PLANNER_MODEL` in the API, worker, and benchmark process environments. Keep the disposable instrumentation token in the API, worker, demo-agent, and benchmark environments. Restart the API and worker after setting provider configuration. With all three local services running, from the repository root run:
+
+```powershell
+python benchmarks/compare_strategies.py --api-url http://127.0.0.1:18088 --target-url http://127.0.0.1:18089 --repetitions 2 --planner-token-budget 768 --output "$env:TEMP\breakmybot-strategy-comparison.json"
+```
+
+The command rejects non-loopback endpoints. At the default budget it submits 16 bounded nRouter planning calls (8 per generated arm), executes at most 8 generated scenarios per arm (16 total), and writes run-level provenance and metrics to the requested artifact. `comparison_status` is `incomplete_generated_execution` if either generated arm failed to execute any valid scenario; the command then exits nonzero. The live provider comparison must still be run with an operator-configured key/model; mocked provider tests do not count as a research result.

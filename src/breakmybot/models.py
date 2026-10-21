@@ -91,6 +91,9 @@ class RunRequest(BaseModel):
     use_nrouter_planner: bool = False
     execute_planned_scenarios: bool = False
     max_planned_scenarios: int = Field(default=3, ge=1, le=5)
+    planned_scenario_mode: Literal["individual", "cascading"] | None = None
+    execute_approved_instrumented_scenarios: bool = True
+    planner_token_budget: int = Field(default=6000, ge=256, le=6000)
     max_latency_seconds: float = Field(default=10, gt=0, le=120)
 
     @model_validator(mode="after")
@@ -102,6 +105,8 @@ class RunRequest(BaseModel):
                 raise ValueError("planned scenario execution requires an approved instrumentation allowlist")
             if self.method != "GET" and not self.allow_repeated_post:
                 raise ValueError("planned scenario execution requires explicit repeated-call authorization")
+        elif not self.execute_approved_instrumented_scenarios:
+            raise ValueError("approved instrumentation cannot be skipped without generated scenario execution")
         return self
 
 

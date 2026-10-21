@@ -40,11 +40,18 @@ def _request(client: httpx.Client, method: str, url: str, **kwargs) -> dict:
 
 def _assessment(client: httpx.Client, api_url: str, target_url: str, *, name: str,
                 endpoint: str, payload: dict, expected: str | None = None,
-                instrumented: dict | None = None) -> dict:
+                instrumented: dict | None = None, planned_mode: str | None = None,
+                max_planned: int = 1, execute_approved: bool = True,
+                planner_token_budget: int = 6000) -> dict:
     body = {"target_url": target_url, "endpoint_path": endpoint, "method": "POST",
         "payload": payload, "profile": "quick", "expected_substring": expected,
         "allow_repeated_post": instrumented is not None,
         "instrumented_assessment": instrumented}
+    if planned_mode:
+        body.update({"use_nrouter_planner": True, "execute_planned_scenarios": True,
+            "max_planned_scenarios": max_planned, "planned_scenario_mode": planned_mode,
+            "execute_approved_instrumented_scenarios": execute_approved,
+            "planner_token_budget": planner_token_budget})
     accepted = _request(client, "POST", f"{api_url}/api/runs", json=body)
     run_id = accepted["run_id"]
     deadline = time.monotonic() + 180
