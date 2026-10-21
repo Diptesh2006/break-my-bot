@@ -202,7 +202,7 @@ Entries can be single faults or named chains with 2–5 ordered tool faults. Eac
 
 ### Optional reference-grounded answer evaluation
 
-If you also operate MemoryScope, configure `MEMORYSCOPE_API_URL` for that service and pass an approved case array with `--memory-cases cases.json`. BreakMyBot asks before sending references and target answers to MemoryScope's nRouter judge. Configure the judge key/model and target-origin allowlist in MemoryScope itself. This evaluates answers against references; it does not test persistent-memory lifecycle or internal memory controls. If your goal is testing the target's actual memory state, use the target-owned adapter and combined memory/tool-fault cases in [`docs/memory-adapter.md`](docs/memory-adapter.md).
+If you also operate MemoryScope, configure `MEMORYSCOPE_API_URL` for that service and pass an approved case array with `--memory-cases cases.json`. BreakMyBot asks before sending references and target answers to MemoryScope's configured LLM judge. Configure the judge key/model and target-origin allowlist in MemoryScope itself. This evaluates answers against references; it does not test persistent-memory lifecycle or internal memory controls. If your goal is testing the target's actual memory state, use the target-owned adapter and combined memory/tool-fault cases in [`docs/memory-adapter.md`](docs/memory-adapter.md).
 
 ### LLM investigation and scenario planning
 
