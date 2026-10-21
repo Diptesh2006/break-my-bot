@@ -1040,8 +1040,12 @@ def test_deterministic_planner_marks_unsupported_fault_injection_as_unexecutable
 
 @pytest.mark.asyncio
 async def test_nrouter_planner_needs_explicit_credentials(monkeypatch):
+    monkeypatch.setenv("BREAKMYBOT_LLM_PROVIDER", "nrouter")
     monkeypatch.delenv("NROUTER_API_KEY", raising=False)
     monkeypatch.delenv("BREAKMYBOT_PLANNER_MODEL", raising=False)
+    monkeypatch.delenv("BREAKMYBOT_LLM_API_KEY", raising=False)
+    monkeypatch.delenv("BREAKMYBOT_LLM_API_KEY_ENV", raising=False)
+    monkeypatch.delenv("BREAKMYBOT_LLM_BASE_URL", raising=False)
     request = RunRequest(target_url="http://localhost:8000", endpoint_path="/api/chat", method="POST",
         payload={"message": "hello"})
     result = await plan(request)

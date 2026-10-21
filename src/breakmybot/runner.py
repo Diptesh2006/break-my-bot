@@ -538,7 +538,8 @@ async def execute(run_id: str, request: RunRequest, cancel: asyncio.Event | None
         run.planning = await planner.plan(request) if request.use_nrouter_planner else {
             "status": "not_requested", "provider": "none", "scenarios": []}
     except Exception:
-        run.planning = {"status": "error", "provider": "nRouter", "reason": "Planner setup failed.", "scenarios": []}
+        run.planning = {"status": "error", "provider": planner.configured_provider_name(),
+            "reason": "Planner setup failed.", "scenarios": []}
     store.save(run)
     store.append_event(run.id, {"type": "planning.completed", "status": run.planning.get("status"),
         "scenario_count": len(run.planning.get("scenarios", []))})

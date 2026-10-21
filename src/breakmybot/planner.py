@@ -2,8 +2,9 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from typing import Literal
-from urllib.parse import urljoin
+from urllib.parse import urljoin, urlsplit
 
 import httpx
 from pydantic import BaseModel, Field, model_validator
@@ -11,6 +12,71 @@ from pydantic import BaseModel, Field, model_validator
 from .models import RunRequest
 
 SUPPORTED_BLACK_BOX_CAPABILITIES = {"http_invocation", "response_observation", "latency_measurement"}
+DEFAULT_NROUTER_BASE_URL = "https://api.nrouter.ai/v1"
+
+
+def _provider_settings() -> dict[str, str]:
+    explicit_provider = os.getenv("BREAKMYBOT_LLM_PROVIDER", "").strip()
+    generic_key = os.getenv("BREAKMYBOT_LLM_API_KEY", "").strip()
+    generic_key_env = os.getenv("BREAKMYBOT_LLM_API_KEY_ENV", "").strip()
+    if not generic_key and re.fullmatch(r"[A-Z][A-Z0-9_]{1,100}", generic_key_env):
+        generic_key = os.getenv(generic_key_env, "").strip()
+    generic_base = os.getenv("BREAKMYBOT_LLM_BASE_URL", "").strip()
+    provider = explicit_provider or (
+        "openai-compatible" if generic_key or generic_key_env or generic_base else "nrouter")
+    if provider.casefold() == "nrouter":
+        return {"name": "nRouter", "api_key": os.getenv("NROUTER_API_KEY", "").strip(),
+            "base_url": os.getenv("NROUTER_BASE_URL", DEFAULT_NROUTER_BASE_URL).strip(),
+            "model": os.getenv("BREAKMYBOT_PLANNER_MODEL", "").strip()
+                or os.getenv("BREAKMYBOT_LLM_MODEL", "").strip(),
+            "auth_header": "Authorization", "auth_scheme": "Bearer",
+            "token_parameter": os.getenv("BREAKMYBOT_LLM_TOKEN_PARAMETER", "").strip()
+                or "max_completion_tokens",
+            "chat_path": "chat/completions"}
+    safe_name = provider if re.fullmatch(r"[A-Za-z0-9._-]{1,40}", provider) else "openai-compatible"
+    return {"name": safe_name, "api_key": generic_key, "base_url": generic_base,
+        "model": os.getenv("BREAKMYBOT_PLANNER_MODEL", "").strip()
+            or os.getenv("BREAKMYBOT_LLM_MODEL", "").strip(),
+        "auth_header": os.getenv("BREAKMYBOT_LLM_AUTH_HEADER", "Authorization").strip(),
+        "auth_scheme": os.getenv("BREAKMYBOT_LLM_AUTH_SCHEME", "Bearer").strip(),
+        "token_parameter": os.getenv("BREAKMYBOT_LLM_TOKEN_PARAMETER", "").strip() or "max_tokens",
+        "chat_path": os.getenv("BREAKMYBOT_LLM_CHAT_COMPLETIONS_PATH", "chat/completions").strip()}
+
+
+def configured_provider_name() -> str:
+    return _provider_settings()["name"]
+
+
+def provider_credentials_configured() -> bool:
+    settings = _provider_settings()
+    if not settings["api_key"] or not settings["model"]:
+        return False
+    try:
+        _chat_completions_url(settings)
+    except ValueError:
+        return False
+    return True
+
+
+def _chat_completions_url(settings: dict[str, str]) -> str:
+    base = urlsplit(settings["base_url"])
+    hostname = (base.hostname or "").casefold()
+    if (base.scheme not in {"http", "https"} or not hostname or base.username or base.password
+            or base.query or base.fragment):
+        raise ValueError("Provider base URL must be an absolute HTTP(S) URL without credentials, query, or fragment.")
+    if base.scheme != "https" and hostname not in {"localhost", "127.0.0.1", "::1", "ip6-localhost"}:
+        raise ValueError("Non-loopback provider base URLs must use HTTPS.")
+    path = settings["chat_path"].strip("/")
+    if (not path or not re.fullmatch(r"[A-Za-z0-9._~/-]+", path)
+            or any(part in {".", ".."} for part in path.split("/"))):
+        raise ValueError("Provider chat-completions path must be a safe relative URL path.")
+    if not re.fullmatch(r"[A-Za-z0-9-]{1,64}", settings["auth_header"]):
+        raise ValueError("Provider auth header name is invalid.")
+    if not re.fullmatch(r"[A-Za-z0-9._~-]{0,32}", settings["auth_scheme"]):
+        raise ValueError("Provider auth scheme is invalid.")
+    if settings["token_parameter"] not in {"max_tokens", "max_completion_tokens"}:
+        raise ValueError("Provider token parameter must be max_tokens or max_completion_tokens.")
+    return urljoin(settings["base_url"].rstrip("/") + "/", path)
 
 
 class ScenarioProposal(BaseModel):
@@ -153,22 +219,24 @@ def mock_plan(request: RunRequest, max_scenarios: int = 5) -> dict:
 
 
 async def plan(request: RunRequest) -> dict:
-    api_key = os.getenv("NROUTER_API_KEY", "").strip()
-    model = os.getenv("BREAKMYBOT_PLANNER_MODEL", "").strip()
+    provider = _provider_settings()
+    api_key = provider["api_key"]
+    model = provider["model"]
     if not api_key or not model:
-        return {"status": "unavailable", "provider": "nRouter",
-            "reason": "NROUTER_API_KEY and BREAKMYBOT_PLANNER_MODEL must be configured to use the opt-in planner.",
+        required = ("NROUTER_API_KEY and BREAKMYBOT_PLANNER_MODEL" if provider["name"] == "nRouter"
+            else "BREAKMYBOT_LLM_API_KEY (or BREAKMYBOT_LLM_API_KEY_ENV), BREAKMYBOT_LLM_BASE_URL, and BREAKMYBOT_PLANNER_MODEL (or BREAKMYBOT_LLM_MODEL)")
+        return {"status": "unavailable", "provider": provider["name"],
+            "reason": f"Configure {required} to use the opt-in planner.",
             "scenarios": []}
-    base = os.getenv("NROUTER_BASE_URL", "https://api.nrouter.ai/v1").rstrip("/") + "/"
-    url = urljoin(base, "chat/completions")
     try:
+        url = _chat_completions_url(provider)
         configured_tokens = max(256, min(int(os.getenv("BREAKMYBOT_MAX_TOKENS_PER_RUN", "12000")), 6000))
         max_tokens = min(configured_tokens, request.planner_token_budget)
         configured_scenarios = max(1, min(int(os.getenv("BREAKMYBOT_MAX_SCENARIOS", "12")), 20))
         max_scenarios = min(configured_scenarios, request.max_planned_scenarios) if request.execute_planned_scenarios else configured_scenarios
     except ValueError:
-        return {"status": "error", "provider": "nRouter", "requested_model": model,
-            "reason": "Planner budget configuration must use integer values.", "scenarios": []}
+        return {"status": "error", "provider": provider["name"], "requested_model": model,
+            "reason": "Planner provider URL or budget configuration is invalid.", "scenarios": []}
     instrumented = request.instrumented_assessment
     available_capabilities = set(SUPPORTED_BLACK_BOX_CAPABILITIES)
     if request.execute_planned_scenarios and instrumented is not None:
@@ -221,11 +289,12 @@ async def plan(request: RunRequest) -> dict:
     }
     try:
         async with httpx.AsyncClient(timeout=25, follow_redirects=False, trust_env=False) as client:
-            response = await client.post(url, headers={"Authorization": f"Bearer {api_key}"}, json={
+            auth_value = f"{provider['auth_scheme']} {api_key}".strip()
+            response = await client.post(url, headers={provider["auth_header"]: auth_value}, json={
                 "model": model,
                 "messages": [{"role": "system", "content": system},
                              {"role": "user", "content": json.dumps(metadata)}],
-                "max_completion_tokens": max_tokens,
+                provider["token_parameter"]: max_tokens,
                 "stream": False,
             })
             response.raise_for_status()
@@ -233,11 +302,11 @@ async def plan(request: RunRequest) -> dict:
         content = data["choices"][0]["message"]["content"]
         validated = ScenarioPlan.model_validate_json(content)
         proposals = sorted(validated.scenarios, key=lambda x: (x.impact * x.feasibility, x.impact), reverse=True)[:max_scenarios]
-        return {"status": "completed", "provider": "nRouter", "requested_model": model,
+        return {"status": "completed", "provider": provider["name"], "requested_model": model,
             "actual_model": data.get("model"), "usage": data.get("usage"), "provider_cost": data.get("cost"),
             "scenarios": [{**item.model_dump(), **_gate(item, request)} for item in proposals],
             "note": ("Eligible generated scenarios will execute only within the supplied instrumentation and oracle allowlists."
                 if request.execute_planned_scenarios else "AI-generated hypotheses are not observations and have not been executed.")}
     except (httpx.HTTPError, KeyError, TypeError, ValueError):
-        return {"status": "error", "provider": "nRouter", "requested_model": model,
+        return {"status": "error", "provider": provider["name"], "requested_model": model,
             "reason": "Planner request failed or did not return a valid structured scenario plan.", "scenarios": []}

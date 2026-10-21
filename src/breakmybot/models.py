@@ -208,7 +208,7 @@ class RunRequest(BaseModel):
                 raise ValueError("combined memory/tool experiments may use only operator-approved faults")
         if self.execute_planned_scenarios:
             if not self.use_nrouter_planner:
-                raise ValueError("planned scenario execution requires the nRouter planner")
+                raise ValueError("planned scenario execution requires the configured AI planner")
             if self.instrumented_assessment is None:
                 raise ValueError("planned scenario execution requires an approved instrumentation allowlist")
             if self.method != "GET" and not self.allow_repeated_post:

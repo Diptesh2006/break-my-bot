@@ -62,8 +62,12 @@ def test_strategy_comparison_budget_is_zero_cost_for_fixed_arm():
 
 def test_live_strategy_comparison_requires_real_provider_configuration(monkeypatch):
     monkeypatch.setenv("BREAKMYBOT_INSTRUMENTATION_TOKEN", "test-token-long-enough-for-local-tests")
+    monkeypatch.setenv("BREAKMYBOT_LLM_PROVIDER", "nrouter")
     monkeypatch.delenv("NROUTER_API_KEY", raising=False)
     monkeypatch.delenv("BREAKMYBOT_PLANNER_MODEL", raising=False)
+    monkeypatch.delenv("BREAKMYBOT_LLM_API_KEY", raising=False)
+    monkeypatch.delenv("BREAKMYBOT_LLM_API_KEY_ENV", raising=False)
+    monkeypatch.delenv("BREAKMYBOT_LLM_BASE_URL", raising=False)
 
-    with pytest.raises(ValueError, match="requires NROUTER_API_KEY"):
+    with pytest.raises(ValueError, match="requires the configured provider API key"):
         run_comparison("http://127.0.0.1:1", "http://127.0.0.1:2", repetitions=1)

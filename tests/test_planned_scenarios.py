@@ -36,7 +36,7 @@ def _proposal(**execution_overrides) -> ScenarioProposal:
 
 
 def test_generated_execution_requires_both_planner_and_instrumentation_opt_ins():
-    with pytest.raises(ValidationError, match="requires the nRouter planner"):
+    with pytest.raises(ValidationError, match="requires the configured AI planner"):
         _request(use_nrouter_planner=False)
     with pytest.raises(ValidationError, match="instrumentation allowlist"):
         _request(instrumented_assessment=None)
@@ -133,12 +133,14 @@ async def test_nrouter_plan_receives_only_execution_allowlists_and_bounds(monkey
             return FakeResponse()
 
     monkeypatch.setenv("NROUTER_API_KEY", "test-provider-key")
+    monkeypatch.setenv("BREAKMYBOT_LLM_PROVIDER", "nrouter")
     monkeypatch.setenv("BREAKMYBOT_PLANNER_MODEL", "test-model")
     monkeypatch.setenv("BREAKMYBOT_MAX_TOKENS_PER_RUN", "12000")
     monkeypatch.setattr(planner.httpx, "AsyncClient", FakeClient)
 
     result = await planner.plan(request)
 
+    assert result["provider"] == "nRouter"
     metadata = json.loads(captured["messages"][1]["content"])
     assert metadata["max_scenarios"] == 2
     assert captured["max_completion_tokens"] == 512
@@ -154,6 +156,74 @@ async def test_nrouter_plan_receives_only_execution_allowlists_and_bounds(monkey
     assert result["scenarios"][0]["executed"] is False
     assert result["usage"]["total_tokens"] == 20
     assert result["provider_cost"] == 0.001
+
+
+@pytest.mark.asyncio
+async def test_configurable_openai_compatible_provider_uses_external_key_env(monkeypatch):
+    monkeypatch.setenv("BREAKMYBOT_LLM_PROVIDER", "openai-compatible")
+    monkeypatch.setenv("BREAKMYBOT_LLM_API_KEY_ENV", "OPENAI_API_KEY")
+    monkeypatch.setenv("OPENAI_API_KEY", "provider-secret-value")
+    monkeypatch.setenv("BREAKMYBOT_LLM_BASE_URL", "https://llm.example.test/v1")
+    monkeypatch.setenv("BREAKMYBOT_LLM_AUTH_HEADER", "x-api-key")
+    monkeypatch.setenv("BREAKMYBOT_LLM_AUTH_SCHEME", "")
+    monkeypatch.setenv("BREAKMYBOT_LLM_TOKEN_PARAMETER", "max_tokens")
+    monkeypatch.setenv("BREAKMYBOT_LLM_CHAT_COMPLETIONS_PATH", "chat/completions")
+    monkeypatch.setenv("BREAKMYBOT_LLM_MODEL", "compatible-model")
+    monkeypatch.delenv("BREAKMYBOT_PLANNER_MODEL", raising=False)
+    captured = {}
+
+    class FakeResponse:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {"model": "compatible-model", "usage": {"total_tokens": 10},
+                "choices": [{"message": {"content": '{"scenarios": []}'}}]}
+
+    class FakeClient:
+        def __init__(self, **_kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return None
+
+        async def post(self, url, *, headers, json):
+            captured.update(url=url, headers=headers, body=json)
+            return FakeResponse()
+
+    monkeypatch.setattr(planner.httpx, "AsyncClient", FakeClient)
+    result = await planner.plan(_request(execute_planned_scenarios=False,
+        instrumented_assessment=None))
+
+    assert result["status"] == "completed"
+    assert result["provider"] == "openai-compatible"
+    assert result["actual_model"] == "compatible-model"
+    assert captured["url"] == "https://llm.example.test/v1/chat/completions"
+    assert captured["headers"] == {"x-api-key": "provider-secret-value"}
+    assert captured["body"]["max_tokens"] == 6000
+    assert "provider-secret-value" not in json.dumps(result)
+
+
+@pytest.mark.asyncio
+async def test_configured_provider_rejects_insecure_remote_url_without_sending_key(monkeypatch):
+    monkeypatch.setenv("BREAKMYBOT_LLM_PROVIDER", "custom")
+    monkeypatch.setenv("BREAKMYBOT_LLM_API_KEY", "must-not-leak")
+    monkeypatch.setenv("BREAKMYBOT_LLM_BASE_URL", "http://provider.example.test/v1")
+    monkeypatch.setenv("BREAKMYBOT_PLANNER_MODEL", "some-model")
+
+    class ForbiddenClient:
+        def __init__(self, **_kwargs):
+            pytest.fail("insecure remote provider URL must be rejected before network access")
+
+    monkeypatch.setattr(planner.httpx, "AsyncClient", ForbiddenClient)
+    result = await planner.plan(_request(execute_planned_scenarios=False,
+        instrumented_assessment=None))
+    assert result["status"] == "error"
+    assert result["provider"] == "custom"
+    assert "must-not-leak" not in json.dumps(result)
 
 
 @pytest.mark.asyncio

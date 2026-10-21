@@ -12,6 +12,8 @@ from rich.console import Console
 from rich.prompt import Confirm, Prompt
 from rich.table import Table
 
+from . import planner
+
 app = typer.Typer(help="Test the observable reliability of a locally running AI application.")
 console = Console()
 API = os.getenv("BREAKMYBOT_API_URL", "http://127.0.0.1:8000").rstrip("/")
@@ -39,7 +41,7 @@ def init():
     example = Path(__file__).resolve().parents[2] / ".env.example"
     if example.exists():
         path.write_text(example.read_text(encoding="utf-8"), encoding="utf-8")
-        console.print("Created .env. Review optional nRouter settings and allowed hosts.")
+        console.print("Created .env. Review the planner provider settings and allowed hosts.")
     else:
         console.print("Run from the BreakMyBot repository root to create .env.")
 
@@ -69,9 +71,12 @@ def test(
     memory_control_auth_env: str = typer.Option("BREAKMYBOT_MEMORY_TOKEN", "--memory-control-auth-env", help="Environment variable containing the target memory-control token"),
     instrumented_faults: Path | None = typer.Option(None, "--instrumented-faults", help="JSON file of opt-in tool fault scenarios"),
     instrumentation_auth_env: str = typer.Option("BREAKMYBOT_INSTRUMENTATION_TOKEN", "--instrumentation-auth-env", help="Environment variable containing the target instrumentation control token"),
-    plan_with_nrouter: bool = typer.Option(False, "--plan-with-nrouter", help="Opt in to send endpoint metadata to the configured nRouter planner"),
-    execute_planned_scenarios: bool = typer.Option(False, "--execute-planned-scenarios", help="Explicitly authorize bounded nRouter-proposed faults from the supplied instrumentation allowlist"),
-    max_planned_scenarios: int = typer.Option(3, "--max-planned-scenarios", min=1, max=5, help="Maximum number of nRouter-proposed scenarios to execute (1-5)"),
+    plan_with_nrouter: bool = typer.Option(False, "--plan-with-ai", "--plan-with-nrouter",
+        help="Opt in to send endpoint metadata to the configured AI provider (nRouter by default)"),
+    execute_planned_scenarios: bool = typer.Option(False, "--execute-planned-scenarios",
+        help="Explicitly authorize bounded AI-proposed faults from the supplied instrumentation allowlist"),
+    max_planned_scenarios: int = typer.Option(3, "--max-planned-scenarios", min=1, max=5,
+        help="Maximum number of AI-proposed scenarios to execute (1-5)"),
 ):
     """Discover and run bounded black-box HTTP checks."""
     if profile not in {"quick", "standard", "deep"}:
@@ -219,14 +224,14 @@ def test(
             instrumented_memory_assessment = validated.model_dump(mode="json")
             execute_memory_scenarios = True
     if plan_with_nrouter and not Confirm.ask(
-        "Send target name, endpoint/method and payload field names to nRouter for scenario planning? "
+        f"Send target name, endpoint/method and payload field names to {planner.configured_provider_name()} for scenario planning? "
         "When generated execution is enabled, the approved tool/fault pairs and response oracles are also sent.",
         default=False,
     ):
         plan_with_nrouter = False
     if execute_planned_scenarios:
         if not plan_with_nrouter:
-            raise typer.BadParameter("--execute-planned-scenarios requires --plan-with-nrouter and its consent")
+            raise typer.BadParameter("--execute-planned-scenarios requires --plan-with-ai (or --plan-with-nrouter) and its consent")
         if instrumented_assessment is None:
             raise typer.BadParameter("--execute-planned-scenarios requires an accepted --instrumented-faults allowlist")
         if method != "GET" and not allow_repeated_post:

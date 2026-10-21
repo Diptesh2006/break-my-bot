@@ -1,4 +1,4 @@
-"""Compare fixed, generated-individual, and generated-cascade tests on the local demo agent."""
+"""Compare fixed and AI-generated individual/cascade tests on the local demo agent."""
 
 from __future__ import annotations
 
@@ -11,6 +11,7 @@ from datetime import datetime
 from pathlib import Path
 
 import httpx
+from breakmybot.planner import configured_provider_name, provider_credentials_configured
 
 try:
     from benchmarks.verify_demo import _assessment, _local_http_base, _request
@@ -184,8 +185,8 @@ def run_comparison(api_url: str, target_url: str, *, repetitions: int = 2,
     token = os.getenv(INSTRUMENTATION_ENV, "")
     if len(token) < 32:
         raise ValueError(f"Set {INSTRUMENTATION_ENV} to a 32+ character test token in API, worker, demo, and benchmark environments")
-    if not os.getenv("NROUTER_API_KEY", "").strip() or not os.getenv("BREAKMYBOT_PLANNER_MODEL", "").strip():
-        raise ValueError("Strategy comparison requires NROUTER_API_KEY and BREAKMYBOT_PLANNER_MODEL in the API, worker, and benchmark environments")
+    if not provider_credentials_configured():
+        raise ValueError("Strategy comparison requires the configured provider API key, base URL, and model in the API, worker, and benchmark environments")
 
     with httpx.Client(timeout=httpx.Timeout(15, connect=3), follow_redirects=False, trust_env=False) as client:
         health = _request(client, "GET", f"{api_url}/api/health")
@@ -210,7 +211,7 @@ def run_comparison(api_url: str, target_url: str, *, repetitions: int = 2,
                     instrumented=_instrumented_single(kind))
                 fixed_individual.append(_attempt(run, generated=False, expected_status="VERIFIED_FAILURE"))
         for repetition in range(repetitions * len(SINGLE_FAULTS)):
-            run = _assessment(client, api_url, target_url, name=f"nrouter-individual-{repetition + 1}",
+            run = _assessment(client, api_url, target_url, name=f"ai-individual-{repetition + 1}",
                 endpoint="/api/chat", payload={"message": "refund policy"},
                 instrumented=individual_allowlist, planned_mode="individual", max_planned=1,
                 execute_approved=False, planner_token_budget=planner_token_budget)
@@ -224,7 +225,7 @@ def run_comparison(api_url: str, target_url: str, *, repetitions: int = 2,
                     endpoint="/api/chat/chain", payload={}, instrumented=_instrumented_chain(customer_kind, policy_kind))
                 fixed_cascading.append(_attempt(run, generated=False, expected_status="VERIFIED_FAILURE"))
         for repetition in range(repetitions * len(CHAIN_FAULTS)):
-            run = _assessment(client, api_url, target_url, name=f"nrouter-cascade-{repetition + 1}",
+            run = _assessment(client, api_url, target_url, name=f"ai-cascade-{repetition + 1}",
                 endpoint="/api/chat/chain", payload={}, instrumented=cascading_allowlist,
                 planned_mode="cascading", max_planned=1, execute_approved=False,
                 planner_token_budget=planner_token_budget)
@@ -233,27 +234,28 @@ def run_comparison(api_url: str, target_url: str, *, repetitions: int = 2,
         strategies = [
             _strategy_summary("fixed_individual", fixed_individual, controls, generated=False,
                 conditions=[_recipe_signature([("refund_policy", kind)]) for kind in SINGLE_FAULTS]),
-            _strategy_summary("nrouter_generated_individual", generated_individual, controls, generated=True,
+            _strategy_summary("ai_generated_individual", generated_individual, controls, generated=True,
                 conditions=[_recipe_signature([("refund_policy", kind)]) for kind in SINGLE_FAULTS]),
             _strategy_summary("fixed_cascading", fixed_cascading, controls, generated=False,
                 conditions=[_recipe_signature([("customer_context", first), ("refund_policy", second)])
                     for first, second in CHAIN_FAULTS]),
-            _strategy_summary("nrouter_generated_cascading", generated_cascading, controls, generated=True,
+            _strategy_summary("ai_generated_cascading", generated_cascading, controls, generated=True,
                 conditions=[_recipe_signature([("customer_context", first), ("refund_policy", second)])
                     for first, second in CHAIN_FAULTS]),
         ]
     strategy_budget = repetitions * len(SINGLE_FAULTS)
     generated_execution_counts = [item["scenario_attempts_executed"] for item in strategies
-        if item["strategy"].startswith("nrouter_")]
+        if item["strategy"].startswith("ai_generated_")]
     return {
         "schema_version": "breakmybot-strategy-comparison-v1",
         "created_at": datetime.now().astimezone().isoformat(),
         "target_url": target_url,
         "comparison_status": "completed" if all(generated_execution_counts) else "incomplete_generated_execution",
+        "planner_provider": configured_provider_name(),
         "methodology": (
             "Loopback deterministic demo-agent pilot. Each strategy arm receives the same number of scenario "
             "executions per family (4 fault recipes × repetitions); each assessment also includes the same one "
-            "baseline invocation. Generated arms make one nRouter planning call per candidate attempt, execute at "
+            "baseline invocation. Generated arms make one configured-provider planning call per candidate attempt, execute at "
             "most one bounded proposal per call, and use the same approved fault atoms and response oracle as the "
             "fixed arm. Cascading recipes compose two distinct approved tool-fault atoms in target call order."
         ),
@@ -270,7 +272,7 @@ def run_comparison(api_url: str, target_url: str, *, repetitions: int = 2,
             "This is a small deterministic local pilot, not a powered study and not evidence of superiority.",
             "The testbed contains one known single-tool fallback defect and one known cascading fallback defect; findings do not generalize to arbitrary agents.",
             "The generated arms use a constrained menu of operator-approved fault atoms and oracle text; they are not unrestricted natural-language test generation.",
-            "Provider cost is reported only when nRouter returns it; missing cost records remain null rather than being treated as free.",
+            "Provider cost is reported only when the provider returns it; missing cost records remain null rather than being treated as free.",
             "Wall time is per assessment run and includes provider planning for generated strategies; analyst effort is not measured.",
             "The separate deterministic benchmark covers stale memory; this comparison isolates tool-fault scenario strategies.",
         ],
@@ -283,7 +285,7 @@ def main() -> int:
     parser.add_argument("--target-url", default="http://127.0.0.1:8001")
     parser.add_argument("--output", type=Path, default=Path("benchmark-results/strategy-comparison.json"))
     parser.add_argument("--repetitions", type=int, default=2, help=f"Repetitions per recipe (1-{REPETITION_LIMIT}; pilot default: 2)")
-    parser.add_argument("--planner-token-budget", type=int, default=PLANNER_TOKEN_BUDGET, help="Completion-token cap per nRouter call (256-6000)")
+    parser.add_argument("--planner-token-budget", type=int, default=PLANNER_TOKEN_BUDGET, help="Completion-token cap per configured AI-provider call (256-6000)")
     args = parser.parse_args()
     if not 1 <= args.repetitions <= REPETITION_LIMIT:
         parser.error(f"--repetitions must be between 1 and {REPETITION_LIMIT}")
