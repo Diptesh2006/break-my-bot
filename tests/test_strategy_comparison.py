@@ -71,3 +71,23 @@ def test_live_strategy_comparison_requires_real_provider_configuration(monkeypat
 
     with pytest.raises(ValueError, match="requires the configured provider API key"):
         run_comparison("http://127.0.0.1:1", "http://127.0.0.1:2", repetitions=1)
+
+
+def test_total_token_budget_is_checked_before_provider_or_target_calls(monkeypatch):
+    monkeypatch.setenv("BREAKMYBOT_INSTRUMENTATION_TOKEN", "test-token-long-enough-for-local-tests")
+    monkeypatch.setenv("BREAKMYBOT_LLM_PROVIDER", "nrouter")
+    monkeypatch.setenv("NROUTER_API_KEY", "test-key")
+    monkeypatch.setenv("BREAKMYBOT_PLANNER_MODEL", "test-model")
+    with pytest.raises(ValueError, match="Total planner token budget must be at least 2048"):
+        run_comparison("http://127.0.0.1:1", "http://127.0.0.1:2", repetitions=1,
+            planner_token_budget=768, total_planner_token_budget=2047)
+
+
+def test_total_token_budget_caps_each_generated_call():
+    from benchmarks.compare_strategies import CHAIN_FAULTS, SINGLE_FAULTS
+
+    repetitions = 2
+    calls = repetitions * (len(SINGLE_FAULTS) + len(CHAIN_FAULTS))
+    allocated = min(768, 10_000 // calls)
+    assert calls == 16
+    assert allocated == 625

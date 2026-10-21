@@ -181,7 +181,16 @@ def _strategy_summary(name: str, attempts: list[dict], controls: list[dict], *, 
 
 
 def run_comparison(api_url: str, target_url: str, *, repetitions: int = 2,
-                   planner_token_budget: int = PLANNER_TOKEN_BUDGET) -> dict:
+                   planner_token_budget: int = PLANNER_TOKEN_BUDGET,
+                   total_planner_token_budget: int | None = None) -> dict:
+    generated_call_count = repetitions * len(SINGLE_FAULTS) * 2
+    total_planner_token_budget = total_planner_token_budget or (
+        generated_call_count * planner_token_budget)
+    if total_planner_token_budget < generated_call_count * 256:
+        raise ValueError(f"Total planner token budget must be at least {generated_call_count * 256} "
+            "to preserve the minimum per-call budget across all generated arms")
+    allocated_call_budget = min(planner_token_budget,
+        total_planner_token_budget // generated_call_count)
     token = os.getenv(INSTRUMENTATION_ENV, "")
     if len(token) < 32:
         raise ValueError(f"Set {INSTRUMENTATION_ENV} to a 32+ character test token in API, worker, demo, and benchmark environments")
@@ -214,7 +223,7 @@ def run_comparison(api_url: str, target_url: str, *, repetitions: int = 2,
             run = _assessment(client, api_url, target_url, name=f"ai-individual-{repetition + 1}",
                 endpoint="/api/chat", payload={"message": "refund policy"},
                 instrumented=individual_allowlist, planned_mode="individual", max_planned=1,
-                execute_approved=False, planner_token_budget=planner_token_budget)
+                execute_approved=False, planner_token_budget=allocated_call_budget)
             generated_individual.append(_attempt(run, generated=True, expected_status="VERIFIED_FAILURE"))
 
         fixed_cascading, generated_cascading = [], []
@@ -228,7 +237,7 @@ def run_comparison(api_url: str, target_url: str, *, repetitions: int = 2,
             run = _assessment(client, api_url, target_url, name=f"ai-cascade-{repetition + 1}",
                 endpoint="/api/chat/chain", payload={}, instrumented=cascading_allowlist,
                 planned_mode="cascading", max_planned=1, execute_approved=False,
-                planner_token_budget=planner_token_budget)
+                planner_token_budget=allocated_call_budget)
             generated_cascading.append(_attempt(run, generated=True, expected_status="VERIFIED_FAILURE"))
 
         strategies = [
@@ -263,8 +272,10 @@ def run_comparison(api_url: str, target_url: str, *, repetitions: int = 2,
             "individual_scenario_executions_per_arm": strategy_budget,
             "cascading_scenario_executions_per_arm": strategy_budget,
             "planned_scenarios_per_generated_call": 1,
-            "planner_completion_token_cap_per_call": planner_token_budget,
+            "planner_completion_token_cap_per_call": allocated_call_budget,
             "generated_planning_calls_per_arm": strategy_budget,
+            "generated_planning_calls_total": generated_call_count,
+            "total_planner_completion_token_budget": total_planner_token_budget,
             "shared_fixed_control_attempts": repetitions},
         "controls": controls,
         "strategies": strategies,
@@ -286,6 +297,8 @@ def main() -> int:
     parser.add_argument("--output", type=Path, default=Path("benchmark-results/strategy-comparison.json"))
     parser.add_argument("--repetitions", type=int, default=2, help=f"Repetitions per recipe (1-{REPETITION_LIMIT}; pilot default: 2)")
     parser.add_argument("--planner-token-budget", type=int, default=PLANNER_TOKEN_BUDGET, help="Completion-token cap per configured AI-provider call (256-6000)")
+    parser.add_argument("--total-planner-token-budget", type=int, default=None,
+        help="Aggregate completion-token budget across all generated calls (default: per-call cap × call count)")
     args = parser.parse_args()
     if not 1 <= args.repetitions <= REPETITION_LIMIT:
         parser.error(f"--repetitions must be between 1 and {REPETITION_LIMIT}")
@@ -295,7 +308,8 @@ def main() -> int:
         api_url = _local_http_base(args.api_url, "--api-url")
         target_url = _local_http_base(args.target_url, "--target-url")
         result = run_comparison(api_url, target_url, repetitions=args.repetitions,
-            planner_token_budget=args.planner_token_budget)
+            planner_token_budget=args.planner_token_budget,
+            total_planner_token_budget=args.total_planner_token_budget)
     except (ValueError, httpx.HTTPError, TimeoutError, KeyError) as exc:
         print(f"Strategy comparison failed: {exc}", file=sys.stderr)
         return 2
