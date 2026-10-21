@@ -26,6 +26,7 @@ def _scenario_event(run_id: str, result: ScenarioResult, completed: int) -> None
     allowed = {"response_excerpt", "content_type", "assertion_passed", "fault_injected",
         "injection_events", "cleanup_succeeded", "http_status", "invocation_error",
         "expected_substring_passed", "threshold_ms", "timeout_ms", "error_type",
+        "response_size_bytes",
         "contract", "body_nonempty", "parse_passed", "steps", "assertions",
         "concurrency", "request_statuses", "request_durations_ms", "error_types"}
     store.append_event(run_id, {"type": "scenario.completed", "scenario_id": result.scenario_id,
@@ -528,21 +529,13 @@ async def execute(run_id: str, request: RunRequest, cancel: asyncio.Event | None
     store.save(run)
     store.append_event(run.id, {"type": "run.started", "phase": "DISCOVERING"})
     _phase(run.id, "DISCOVERING")
-    try:
-        if cancel and cancel.is_set():
-            run.status = "CANCELLED"
-            run.completed_at = datetime.now(timezone.utc)
-            store.append_event(run.id, {"type": "run.cancelled", "phase": "CANCELLED"})
-            store.save(run)
-            return run
-        run.planning = await planner.plan(request) if request.use_nrouter_planner else {
-            "status": "not_requested", "provider": "none", "scenarios": []}
-    except Exception:
-        run.planning = {"status": "error", "provider": planner.configured_provider_name(),
-            "reason": "Planner setup failed.", "scenarios": []}
-    store.save(run)
-    store.append_event(run.id, {"type": "planning.completed", "status": run.planning.get("status"),
-        "scenario_count": len(run.planning.get("scenarios", []))})
+    if cancel and cancel.is_set():
+        run.status = "CANCELLED"
+        run.completed_at = datetime.now(timezone.utc)
+        store.append_event(run.id, {"type": "run.cancelled", "phase": "CANCELLED"})
+        store.save(run)
+        return run
+    run.planning = {"status": "not_requested", "provider": "none", "scenarios": []}
     _phase(run.id, "BASELINE")
     try:
         scenario_limit = max(1, int(os.getenv("BREAKMYBOT_MAX_SCENARIOS", "12")))
@@ -588,6 +581,7 @@ async def execute(run_id: str, request: RunRequest, cancel: asyncio.Event | None
                 state = "PASSED" if success else "VERIFIED_FAILURE"
                 severity = "high" if status >= 500 else "medium" if status >= 400 else "info"
                 evidence = {"response_excerpt": body[:1200], "content_type": content_type,
+                    "response_size_bytes": len(raw_body.encode("utf-8")),
                     "assertion": "HTTP status is 2xx", "assertion_passed": success}
                 if request.expected_substring:
                     matched = request.expected_substring.casefold() in raw_body.casefold()
@@ -656,6 +650,28 @@ async def execute(run_id: str, request: RunRequest, cancel: asyncio.Event | None
                 _scenario_event(run.id, run.scenarios[-1], len(run.scenarios))
                 run.status = "PARTIAL"
                 break
+        if request.use_nrouter_planner and not (cancel and cancel.is_set()):
+            baseline = next((item for item in run.scenarios if item.scenario_id == "baseline"), None)
+            if baseline is None or baseline.http_status is None:
+                run.planning = {"status": "skipped", "provider": planner.configured_provider_name(),
+                    "reason": "No HTTP baseline observation was available; no provider request was made.",
+                    "scenarios": []}
+            else:
+                contract = next((item for item in run.scenarios if item.scenario_id == "contract-0"), None)
+                profile = {"http_status": baseline.http_status,
+                    "http_success": baseline.status == "PASSED",
+                    "latency_ms": baseline.duration_ms,
+                    "content_type": baseline.evidence.get("content_type"),
+                    "response_size_bytes": baseline.evidence.get("response_size_bytes"),
+                    "response_contract": contract.status if contract else "not_observed"}
+                try:
+                    run.planning = await planner.plan(request, baseline_profile=profile)
+                except Exception:
+                    run.planning = {"status": "error", "provider": planner.configured_provider_name(),
+                        "reason": "Planner setup failed.", "scenarios": []}
+            store.save(run)
+            store.append_event(run.id, {"type": "planning.completed", "status": run.planning.get("status"),
+                "scenario_count": len(run.planning.get("scenarios", []))})
         if request.concurrency_requests:
             if run.status == "PARTIAL":
                 concurrency_result = ScenarioResult(scenario_id="concurrency",

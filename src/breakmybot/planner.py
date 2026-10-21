@@ -13,6 +13,14 @@ from .models import RunRequest
 
 SUPPORTED_BLACK_BOX_CAPABILITIES = {"http_invocation", "response_observation", "latency_measurement"}
 DEFAULT_NROUTER_BASE_URL = "https://api.nrouter.ai/v1"
+OPENAI_COMPATIBLE_PROVIDERS = {
+    "openai": ("https://api.openai.com/v1", "OPENAI_API_KEY"),
+    "openrouter": ("https://openrouter.ai/api/v1", "OPENROUTER_API_KEY"),
+    "groq": ("https://api.groq.com/openai/v1", "GROQ_API_KEY"),
+    "gemini": ("https://generativelanguage.googleapis.com/v1beta/openai", "GEMINI_API_KEY"),
+    "mistral": ("https://api.mistral.ai/v1", "MISTRAL_API_KEY"),
+    "deepseek": ("https://api.deepseek.com", "DEEPSEEK_API_KEY"),
+}
 
 
 def _provider_settings() -> dict[str, str]:
@@ -33,8 +41,14 @@ def _provider_settings() -> dict[str, str]:
             "token_parameter": os.getenv("BREAKMYBOT_LLM_TOKEN_PARAMETER", "").strip()
                 or "max_completion_tokens",
             "chat_path": "chat/completions"}
+    preset = OPENAI_COMPATIBLE_PROVIDERS.get(provider.casefold())
+    preset_base, preset_key_env = preset if preset else ("", "")
+    if not generic_key:
+        key_env = generic_key_env if re.fullmatch(r"[A-Z][A-Z0-9_]{1,100}", generic_key_env) else preset_key_env
+        if key_env:
+            generic_key = os.getenv(key_env, "").strip()
     safe_name = provider if re.fullmatch(r"[A-Za-z0-9._-]{1,40}", provider) else "openai-compatible"
-    return {"name": safe_name, "api_key": generic_key, "base_url": generic_base,
+    return {"name": safe_name, "api_key": generic_key, "base_url": generic_base or preset_base,
         "model": os.getenv("BREAKMYBOT_PLANNER_MODEL", "").strip()
             or os.getenv("BREAKMYBOT_LLM_MODEL", "").strip(),
         "auth_header": os.getenv("BREAKMYBOT_LLM_AUTH_HEADER", "Authorization").strip(),
@@ -218,7 +232,7 @@ def mock_plan(request: RunRequest, max_scenarios: int = 5) -> dict:
         "note": "These are unexecuted planning hypotheses, not target observations."}
 
 
-async def plan(request: RunRequest) -> dict:
+async def plan(request: RunRequest, baseline_profile: dict | None = None) -> dict:
     provider = _provider_settings()
     api_key = provider["api_key"]
     model = provider["model"]
@@ -277,6 +291,7 @@ async def plan(request: RunRequest) -> dict:
     )
     metadata = {"application_name": request.application_name, "method": request.method,
         "endpoint_path": request.endpoint_path, "payload_keys": sorted(request.payload.keys()),
+        "baseline_profile": baseline_profile,
         "available_capabilities": sorted(available_capabilities), "max_scenarios": max_scenarios,
         "execute_planned_scenarios": request.execute_planned_scenarios,
         "max_planned_scenarios": request.max_planned_scenarios if request.execute_planned_scenarios else 0,

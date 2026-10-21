@@ -44,6 +44,30 @@ def test_generated_execution_requires_both_planner_and_instrumentation_opt_ins()
         _request(allow_repeated_post=False)
 
 
+@pytest.mark.parametrize("provider,base_url,key_name", [
+    ("openai", "https://api.openai.com/v1", "OPENAI_API_KEY"),
+    ("openrouter", "https://openrouter.ai/api/v1", "OPENROUTER_API_KEY"),
+    ("groq", "https://api.groq.com/openai/v1", "GROQ_API_KEY"),
+    ("gemini", "https://generativelanguage.googleapis.com/v1beta/openai", "GEMINI_API_KEY"),
+    ("mistral", "https://api.mistral.ai/v1", "MISTRAL_API_KEY"),
+    ("deepseek", "https://api.deepseek.com", "DEEPSEEK_API_KEY"),
+])
+def test_named_provider_presets_use_provider_key_and_openai_compatible_endpoint(
+        monkeypatch, provider, base_url, key_name):
+    monkeypatch.setenv("BREAKMYBOT_LLM_PROVIDER", provider)
+    monkeypatch.setenv("BREAKMYBOT_PLANNER_MODEL", "operator-selected-model")
+    monkeypatch.setenv(key_name, "provider-test-key")
+    for name in ("BREAKMYBOT_LLM_API_KEY", "BREAKMYBOT_LLM_API_KEY_ENV", "BREAKMYBOT_LLM_BASE_URL"):
+        monkeypatch.delenv(name, raising=False)
+
+    settings = planner._provider_settings()
+
+    assert settings["api_key"] == "provider-test-key"
+    assert settings["base_url"] == base_url
+    assert settings["model"] == "operator-selected-model"
+    assert planner._chat_completions_url(settings) == base_url + "/chat/completions"
+
+
 def test_generated_execution_gate_only_accepts_approved_fault_and_oracle():
     request = _request()
     approved = _proposal()
@@ -138,10 +162,17 @@ async def test_nrouter_plan_receives_only_execution_allowlists_and_bounds(monkey
     monkeypatch.setenv("BREAKMYBOT_MAX_TOKENS_PER_RUN", "12000")
     monkeypatch.setattr(planner.httpx, "AsyncClient", FakeClient)
 
-    result = await planner.plan(request)
+    result = await planner.plan(request, baseline_profile={"http_status": 200,
+        "http_success": True, "latency_ms": 4.2, "content_type": "application/json",
+        "response_size_bytes": 18, "response_contract": "PASSED"})
 
     assert result["provider"] == "nRouter"
     metadata = json.loads(captured["messages"][1]["content"])
+    assert metadata["baseline_profile"] == {"http_status": 200, "http_success": True,
+        "latency_ms": 4.2, "content_type": "application/json", "response_size_bytes": 18,
+        "response_contract": "PASSED"}
+    assert "hello" not in captured["messages"][1]["content"]
+    assert "14 days" not in captured["messages"][1]["content"]
     assert metadata["max_scenarios"] == 2
     assert captured["max_completion_tokens"] == 512
     assert metadata["planner_token_budget"] == 512
@@ -241,6 +272,7 @@ async def test_approved_generated_scenario_executes_against_instrumented_target(
         return {"answer": answer}
 
     original_client = httpx.AsyncClient
+    execution_order = []
 
     def control_client(*args, **kwargs):
         return original_client(*args, **kwargs, transport=ASGITransport(app=target))
@@ -248,6 +280,7 @@ async def test_approved_generated_scenario_executes_against_instrumented_target(
     async def invoke_target(url, path, method, payload, timeout, *, docker_mode=False, headers=None):
         async with original_client(transport=ASGITransport(app=target), base_url=url) as client:
             response = await client.request(method, path, json=payload, headers=headers)
+        execution_order.append("baseline")
         return response.status_code, response.text, 1.0, response.headers.get("content-type", "")
 
     monkeypatch.setattr("breakmybot.instrumentation.httpx.AsyncClient", control_client)
@@ -256,10 +289,12 @@ async def test_approved_generated_scenario_executes_against_instrumented_target(
     monkeypatch.setenv("BREAKMYBOT_DATA_DIR", str(tmp_path))
     monkeypatch.setenv("BREAKMYBOT_DOCKER_MODE", "false")
     monkeypatch.setenv("BREAKMYBOT_INSTRUMENTATION_TOKEN", token)
-    request = _request(execute_approved_instrumented_scenarios=False)
+    request = _request(execute_approved_instrumented_scenarios=False, profile="quick")
     proposal = _proposal()
 
-    async def generated_plan(_request):
+    async def generated_plan(_request, *, baseline_profile=None):
+        execution_order.append("planner")
+        assert baseline_profile["http_status"] == 200
         return {"status": "completed", "provider": "test-fixture", "scenarios": [
             {**proposal.model_dump(), **_gate(proposal, request)}]}
 
@@ -272,6 +307,7 @@ async def test_approved_generated_scenario_executes_against_instrumented_target(
 
     planned = [item for item in result.scenarios if item.scenario_id.startswith("planned-")]
     assert result.status == "COMPLETED"
+    assert execution_order == ["baseline", "planner", "baseline"]
     assert len(planned) == 1
     assert not any(item.scenario_id.startswith("instrumented-tool-") for item in result.scenarios)
     assert planned[0].status == "PASSED"

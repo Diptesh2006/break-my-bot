@@ -229,6 +229,7 @@ def test(
             execute_memory_scenarios = True
     if plan_with_nrouter and not Confirm.ask(
         f"Send target name, endpoint/method and payload field names to {planner.configured_provider_name()} for scenario planning? "
+        "After baseline, HTTP status, latency, content type, response size, and contract outcome are also sent (not response text or payload values). "
         "When generated execution is enabled, the approved tool/fault pairs and response oracles are also sent.",
         default=False,
     ):
