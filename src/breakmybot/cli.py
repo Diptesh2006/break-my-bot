@@ -86,14 +86,18 @@ def test(
     console.print("[green]OK[/green] Application reachable from BreakMyBot")
     if discovered["openapi_found"]:
         console.print("[green]OK[/green] API specification detected")
+    for health_endpoint in discovered.get("health_endpoints", []):
+        console.print(f"Health check: {health_endpoint}")
     choices = discovered["endpoints"]
     selected = next((row for row in choices if endpoint and row["path"] == endpoint), None)
     if not endpoint and len(choices) == 1:
         selected = choices[0]
     elif not endpoint and choices:
-        table = Table("#", "Method", "Path", "Description")
+        table = Table("#", "Method", "Path", "Response", "Description")
         for index, row in enumerate(choices, 1):
-            table.add_row(str(index), row["method"], row["path"], row["description"][:60])
+            response_kind = "streaming" if row.get("streaming") else "standard"
+            table.add_row(str(index), row["method"], row["path"], response_kind,
+                          row["description"][:60])
         console.print(table)
         index = int(Prompt.ask("Choose endpoint number", default="1"))
         if not 1 <= index <= len(choices):
@@ -101,7 +105,8 @@ def test(
         selected = choices[index - 1]
     if selected:
         endpoint, method, template = selected["path"], selected["method"], selected["payload_template"]
-        console.print(f"Selected endpoint: {method} {endpoint}")
+        response_kind = " (streaming response)" if selected.get("streaming") else ""
+        console.print(f"Selected endpoint: {method} {endpoint}{response_kind}")
     else:
         endpoint = endpoint or Prompt.ask("Invocation endpoint path (required; no suitable OpenAPI operation found)")
         method = Prompt.ask("HTTP method", choices=["GET", "POST", "PUT", "PATCH"], default="POST")

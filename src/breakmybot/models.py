@@ -36,6 +36,8 @@ class EndpointCandidate(BaseModel):
     description: str = ""
     score: int = 0
     payload_template: dict[str, Any] = Field(default_factory=dict)
+    response_schemas: dict[str, dict[str, Any]] = Field(default_factory=dict)
+    streaming: bool = False
 
 
 class InstrumentedToolFault(BaseModel):
@@ -150,6 +152,7 @@ class DiscoveryResult(BaseModel):
     openapi_found: bool = False
     application_name: str | None = None
     endpoints: list[EndpointCandidate] = Field(default_factory=list)
+    health_endpoints: list[str] = Field(default_factory=list)
     diagnostics: list[str] = Field(default_factory=list)
 
 

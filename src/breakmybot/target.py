@@ -65,50 +65,190 @@ def docker_resolve_url(url: str) -> str:
     return url
 
 
-def _resolve_ref(spec: dict, value: dict) -> dict:
+def _resolve_ref(spec: dict, value: dict, seen: frozenset[str] = frozenset()) -> dict:
     ref = value.get("$ref", "")
-    if not ref.startswith("#/components/schemas/"):
+    if not ref.startswith("#/") or ref in seen:
         return value
     node = spec
-    for part in ref.lstrip("#/").split("/"):
+    for raw_part in ref[2:].split("/"):
+        part = raw_part.replace("~1", "/").replace("~0", "~")
         node = node.get(part, {}) if isinstance(node, dict) else {}
-    return node if isinstance(node, dict) else value
+    if not isinstance(node, dict):
+        return value
+    return {**node, **{key: child for key, child in value.items() if key != "$ref"}}
+
+
+_PROMPT = "Hello. Please reply briefly."
+_CONVERSATION_FIELDS = ("messages", "chat_history", "message", "input", "prompt", "query")
+
+
+def _sample_value(spec: dict, schema: dict, *, name: str = "", depth: int = 0,
+                  seen: frozenset[str] = frozenset()):
+    """Build a bounded example honoring common OpenAPI constraints and references."""
+    if depth > 8 or not isinstance(schema, dict):
+        return None
+    ref = schema.get("$ref")
+    resolved = _resolve_ref(spec, schema, seen)
+    if ref and resolved is schema:
+        return None
+    next_seen = seen | ({ref} if ref else set())
+    schema = resolved
+
+    for union in ("oneOf", "anyOf"):
+        options = schema.get(union)
+        if isinstance(options, list) and options:
+            return _sample_value(spec, options[0], name=name, depth=depth + 1,
+                                 seen=frozenset(next_seen))
+    if schema.get("allOf"):
+        merged_properties: dict = dict(schema.get("properties", {}))
+        merged_required: list[str] = list(schema.get("required", []))
+        for part in schema["allOf"]:
+            resolved_part = _resolve_ref(spec, part, frozenset(next_seen))
+            merged_properties.update(resolved_part.get("properties", {}))
+            merged_required.extend(resolved_part.get("required", []))
+        schema = {**schema, "properties": merged_properties,
+                  "required": list(dict.fromkeys(merged_required))}
+
+    if "const" in schema:
+        return schema["const"]
+    if "default" in schema:
+        return schema["default"]
+    if "example" in schema:
+        return schema["example"]
+    if isinstance(schema.get("examples"), list) and schema["examples"]:
+        return schema["examples"][0]
+    if "enum" in schema and isinstance(schema["enum"], list) and schema["enum"]:
+        return schema["enum"][0]
+
+    kind = schema.get("type")
+    if isinstance(kind, list):
+        kind = next((item for item in kind if item != "null"), "string")
+    lowered = name.casefold()
+    if kind == "object" or "properties" in schema:
+        props = schema.get("properties", {})
+        if not isinstance(props, dict):
+            return {}
+        required = schema.get("required", [])
+        names = list(dict.fromkeys([item for item in required if item in props]))
+        conversation_field = next((field for field in _CONVERSATION_FIELDS if field in props), None)
+        if conversation_field and not any(field in names for field in _CONVERSATION_FIELDS):
+            names.append(conversation_field)
+        value = {}
+        for field in names:
+            field_schema = props[field]
+            if field in {"messages", "chat_history"} and isinstance(field_schema, dict) \
+                    and field_schema.get("type") == "array":
+                item_schema = _resolve_ref(spec, field_schema.get("items", {}), frozenset(next_seen))
+                if item_schema.get("type") == "object":
+                    item_props = item_schema.get("properties", {})
+                    if item_props:
+                        item = {}
+                        for item_field in item_schema.get("required", list(item_props)):
+                            field_schema = item_props[item_field]
+                            if item_field in {"content", "message", "text"}:
+                                candidate = field_schema.get("enum", [_PROMPT])
+                                item[item_field] = _PROMPT if _PROMPT in candidate else candidate[0]
+                            elif item_field == "role" and "user" in field_schema.get("enum", ["user"]):
+                                item[item_field] = "user"
+                            else:
+                                item[item_field] = _sample_value(spec, field_schema, name=item_field,
+                                    depth=depth + 2, seen=frozenset(next_seen))
+                        if not any(key in item for key in ("content", "message", "text")):
+                            item["content"] = _PROMPT
+                        value[field] = [item]
+                    else:
+                        value[field] = [{"role": "user", "content": _PROMPT}]
+                    continue
+            sampled = _sample_value(spec, field_schema, name=field, depth=depth + 1,
+                                    seen=frozenset(next_seen))
+            if sampled is not None:
+                value[field] = sampled
+        return value
+    if kind == "array":
+        items = schema.get("items", {})
+        minimum = max(1 if lowered in {"messages", "chat_history"} else 0,
+                      int(schema.get("minItems", 0) or 0))
+        maximum = schema.get("maxItems")
+        count = min(minimum, int(maximum)) if maximum is not None else min(minimum, 3)
+        count = min(count, 3)
+        return [_sample_value(spec, items, name=name, depth=depth + 1,
+                              seen=frozenset(next_seen)) for _ in range(count)]
+    if kind == "string" or kind is None:
+        if lowered in _CONVERSATION_FIELDS:
+            value = _PROMPT
+            minimum = int(schema.get("minLength", 0) or 0)
+            if minimum > 256:
+                return None
+            value = value if minimum <= len(value) else value + " " * (minimum - len(value))
+            maximum = schema.get("maxLength")
+            if maximum is not None:
+                if int(maximum) < minimum:
+                    return None
+                value = value[:int(maximum)]
+            return value
+        fmt = schema.get("format")
+        if fmt == "email":
+            return "tester@example.test"
+        if fmt == "uuid":
+            return "00000000-0000-4000-8000-000000000001"
+        if fmt == "date":
+            return "2026-01-01"
+        if fmt == "date-time":
+            return "2026-01-01T00:00:00Z"
+        minimum = int(schema.get("minLength", 0) or 0)
+        maximum = int(schema.get("maxLength", 256) or 0)
+        if maximum < minimum or minimum > 256:
+            return None
+        return "x" * min(max(minimum, 1), maximum, 256)
+    if kind in {"integer", "number"}:
+        numeric = int if kind == "integer" else float
+        minimum = schema.get("minimum", 1)
+        if "exclusiveMinimum" in schema:
+            exclusive = numeric(schema["exclusiveMinimum"])
+            minimum = max(numeric(minimum), exclusive + (1 if kind == "integer" else 0.1))
+        maximum = schema.get("maximum")
+        value = max(numeric(minimum), numeric(1))
+        if maximum is not None:
+            value = min(value, numeric(maximum))
+        if "exclusiveMaximum" in schema:
+            exclusive = numeric(schema["exclusiveMaximum"])
+            value = min(value, exclusive - (1 if kind == "integer" else 0.1))
+        return value
+    if kind == "boolean":
+        return True
+    return None
 
 
 def payload_from_operation(spec: dict, operation: dict) -> dict:
-    content = operation.get("requestBody", {}).get("content", {})
+    request_body = operation.get("requestBody", {})
+    content = request_body.get("content", {}) if isinstance(request_body, dict) else {}
+    if not isinstance(content, dict):
+        content = {}
     media = content.get("application/json") or next(iter(content.values()), {})
-    schema = _resolve_ref(spec, media.get("schema", {}))
-    props = schema.get("properties", {})
-    if not props:
-        return {"message": "Hello. Please reply briefly."}
-    payload: dict = {}
-    for name in schema.get("required", list(props)):
-        prop = _resolve_ref(spec, props.get(name, {}))
-        kind = prop.get("type")
-        if name in {"messages", "chat_history"} and kind == "array":
-            item = _resolve_ref(spec, prop.get("items", {}))
-            if item.get("type") == "object":
-                payload[name] = [{"role": "user", "content": "Hello. Please reply briefly."}]
-            else:
-                payload[name] = ["Hello. Please reply briefly."]
-        elif kind == "string" or not kind:
-            payload[name] = "Hello. Please reply briefly."
-        elif kind == "array":
-            payload[name] = []
-        elif kind == "object":
-            payload[name] = {}
-        elif kind == "boolean":
-            payload[name] = False
-        elif kind in {"integer", "number"}:
-            payload[name] = 1
-    return payload
+    if not isinstance(media, dict):
+        media = {}
+    schema = media.get("schema", {})
+    explicit = media.get("example")
+    if explicit is None and isinstance(media.get("examples"), dict) and media["examples"]:
+        first = next(iter(media["examples"].values()))
+        explicit = first.get("value") if isinstance(first, dict) else None
+    if explicit is not None:
+        return explicit if isinstance(explicit, dict) else {"value": explicit}
+    sample = _sample_value(spec, schema)
+    return sample if isinstance(sample, dict) else {"message": _PROMPT}
 
 
 def identify_endpoints(spec: dict) -> list[EndpointCandidate]:
     candidates: list[EndpointCandidate] = []
-    for path, methods in spec.get("paths", {}).items():
+    paths = spec.get("paths", {})
+    if not isinstance(paths, dict):
+        return candidates
+    for path, methods in paths.items():
+        if not isinstance(methods, dict):
+            continue
         for method, operation in methods.items():
+            if not isinstance(method, str):
+                continue
             method = method.upper()
             if method not in {"POST", "PUT", "PATCH", "GET"} or not isinstance(operation, dict):
                 continue
@@ -117,17 +257,56 @@ def identify_endpoints(spec: dict) -> list[EndpointCandidate]:
             if "requestbody" in operation:
                 score += 2
             if score:
-                schema = operation.get("requestBody", {}).get("content", {})
-                json_schema = schema.get("application/json", {}).get("schema", {})
+                request_body = operation.get("requestBody", {})
+                schema = request_body.get("content", {}) if isinstance(request_body, dict) else {}
+                media = schema.get("application/json", {}) if isinstance(schema, dict) else {}
+                json_schema = media.get("schema", {}) if isinstance(media, dict) else {}
                 props = _resolve_ref(spec, json_schema).get("properties", {}) if isinstance(json_schema, dict) else {}
                 if any(name in props for name in ("messages", "message", "input", "prompt", "query")):
                     score += 3
                 if method == "GET":
                     score -= 1
+                response_schemas: dict[str, dict[str, dict]] = {}
+                streaming = False
+                responses = operation.get("responses", {})
+                for status, response in (responses.items() if isinstance(responses, dict) else []):
+                    if not isinstance(response, dict):
+                        continue
+                    response_content_map = response.get("content", {})
+                    for content_type, response_content in (response_content_map.items()
+                            if isinstance(response_content_map, dict) else []):
+                        if not isinstance(response_content, dict):
+                            continue
+                        if content_type.casefold().split(";")[0].strip() == "text/event-stream":
+                            streaming = True
+                        response_schema = response_content.get("schema")
+                        if isinstance(response_schema, dict):
+                            response_schemas.setdefault(str(status), {})[content_type] = response_schema
                 candidates.append(EndpointCandidate(method=method, path=path,
                     description=operation.get("summary", operation.get("description", "")),
-                    score=score, payload_template=payload_from_operation(spec, operation)))
+                    score=score, payload_template=payload_from_operation(spec, operation),
+                    response_schemas=response_schemas, streaming=streaming))
     return sorted(candidates, key=lambda item: (-item.score, item.path))
+
+
+def identify_health_endpoints(spec: dict) -> list[str]:
+    health: list[str] = []
+    paths = spec.get("paths", {})
+    if not isinstance(paths, dict):
+        return health
+    for path, methods in paths.items():
+        if not isinstance(methods, dict):
+            continue
+        for method, operation in methods.items():
+            if method.lower() != "get" or not isinstance(operation, dict):
+                continue
+            tags = operation.get("tags", [])
+            labels = " ".join([str(path), str(operation.get("summary", "")),
+                str(operation.get("description", "")), str(operation.get("operationId", "")),
+                " ".join(str(tag) for tag in tags) if isinstance(tags, list) else ""]).casefold()
+            if any(term in labels for term in ("health", "readiness", "liveness", "livez", "readyz")):
+                health.append(f"GET {path}")
+    return sorted(set(health))
 
 
 async def discover(url: str, *, docker_mode: bool = False) -> DiscoveryResult:
@@ -147,6 +326,7 @@ async def discover(url: str, *, docker_mode: bool = False) -> DiscoveryResult:
         found_spec = False
         app_name = None
         endpoints: list[EndpointCandidate] = []
+        health_endpoints: list[str] = []
         spec_paths = ["/openapi.json", "/swagger.json"]
         if parsed.path.rstrip("/") not in {"", "/"}:
             spec_paths.insert(0, parsed.path.rstrip("/") + "/openapi.json")
@@ -160,14 +340,18 @@ async def discover(url: str, *, docker_mode: bool = False) -> DiscoveryResult:
                         found_spec = True
                         app_name = spec.get("info", {}).get("title")
                         endpoints = identify_endpoints(spec)
+                        health_endpoints = identify_health_endpoints(spec)
                         diagnostics.append(f"OpenAPI specification found at {path}")
+                        if health_endpoints:
+                            diagnostics.append(f"Health endpoints found: {', '.join(health_endpoints)}")
                         break
             except (httpx.HTTPError, ValueError):
                 continue
         if not found_spec:
             diagnostics.append("No OpenAPI description was found; provide an endpoint and JSON payload explicitly")
         return DiscoveryResult(target_url=display_url, reachable=reachable, openapi_found=found_spec,
-            application_name=app_name, endpoints=endpoints, diagnostics=diagnostics)
+            application_name=app_name, endpoints=endpoints, health_endpoints=health_endpoints,
+            diagnostics=diagnostics)
 
 
 async def preflight(url: str, path: str, method: str, payload: dict, *, docker_mode: bool = False,

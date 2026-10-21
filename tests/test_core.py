@@ -16,7 +16,8 @@ from breakmybot.planner import mock_plan, plan
 from breakmybot.reports import generate
 from breakmybot.redaction import redact_evidence, redact_payload, redact_text
 from breakmybot.scoring import calculate
-from breakmybot.target import identify_endpoints, preflight as run_preflight, validate_target
+from breakmybot.target import (identify_endpoints, identify_health_endpoints, payload_from_operation,
+    preflight as run_preflight, validate_target)
 
 
 def test_target_policy_rejects_public_literal_ip():
@@ -547,6 +548,60 @@ def test_openapi_endpoint_ranking_prefers_schema_with_conversational_input():
     assert candidates[0].payload_template == {"messages": [{"role": "user", "content": "Hello. Please reply briefly."}]}
 
 
+def test_openapi_payload_inference_handles_nested_refs_constraints_and_optional_prompt():
+    spec = {"components": {"schemas": {
+        "ChatRequest": {"type": "object", "required": ["context"], "properties": {
+            "context": {"$ref": "#/components/schemas/Context"},
+            "prompt": {"type": "string", "minLength": 8}}},
+        "Context": {"type": "object", "required": ["tenant", "count"], "properties": {
+            "tenant": {"type": "string", "enum": ["demo-tenant"]},
+            "count": {"type": "integer", "minimum": 3}}},
+    }}, "paths": {"/api/chat": {"post": {"summary": "Chat with agent", "requestBody": {
+        "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ChatRequest"}}}}}}}}
+    candidate = identify_endpoints(spec)[0]
+    assert candidate.payload_template == {
+        "context": {"tenant": "demo-tenant", "count": 3},
+        "prompt": "Hello. Please reply briefly.",
+    }
+
+
+def test_openapi_payload_inference_honors_examples_unions_and_all_of():
+    operation = {"requestBody": {"content": {"application/json": {
+        "examples": {"valid": {"value": {"prompt": "Use the supplied example"}}},
+        "schema": {"type": "object", "properties": {"prompt": {"type": "string"}}},
+    }}}}
+    assert payload_from_operation({}, operation) == {"prompt": "Use the supplied example"}
+
+    spec = {"components": {"schemas": {
+        "Base": {"type": "object", "required": ["tenant"], "properties": {
+            "tenant": {"type": "string", "default": "test"}}},
+        "Request": {"allOf": [{"$ref": "#/components/schemas/Base"}, {
+            "type": "object", "properties": {"input": {"type": "string"}}}]},
+    }}}
+    operation = {"requestBody": {"content": {"application/json": {
+        "schema": {"oneOf": [{"$ref": "#/components/schemas/Request"}]}}}}}
+    assert payload_from_operation(spec, operation) == {
+        "tenant": "test", "input": "Hello. Please reply briefly."}
+
+
+def test_openapi_discovery_exposes_health_routes_response_schemas_and_sse():
+    spec = {"paths": {
+        "/healthz": {"get": {"tags": ["health"], "responses": {"200": {
+            "description": "healthy"}}}},
+        "/api/chat": {"post": {"summary": "Chat with agent", "requestBody": {"content": {
+            "application/json": {"schema": {"type": "object", "properties": {
+                "message": {"type": "string"}}}}}}, "responses": {"200": {"description": "stream",
+            "content": {"text/event-stream": {"schema": {"type": "string"}}}}}}},
+    }}
+    candidates = identify_endpoints(spec)
+    assert len(candidates) == 1
+    assert candidates[0].path == "/api/chat"
+    assert candidates[0].streaming is True
+    assert candidates[0].response_schemas == {
+        "200": {"text/event-stream": {"type": "string"}}}
+    assert identify_health_endpoints(spec) == ["GET /healthz"]
+
+
 def test_score_excludes_unsupported_from_passes_and_keeps_coverage_separate():
     run = RunRecord(target_url="http://localhost:8000", endpoint_path="/chat", method="POST", profile="standard")
     run.scenarios = [
@@ -759,8 +814,12 @@ async def test_standalone_demo_discovery_to_worker_report_acceptance(tmp_path, m
         assert discovery.status_code == 200
         found = discovery.json()
         assert found["reachable"] is True and found["openapi_found"] is True
+        assert found["health_endpoints"] == ["GET /health"]
         candidate = next(item for item in found["endpoints"] if item["path"] == "/api/chat")
         assert candidate["payload_template"] == {"message": "Hello. Please reply briefly."}
+        streaming = next(item for item in found["endpoints"] if item["path"] == "/api/chat/sse")
+        assert streaming["streaming"] is True
+        assert "text/event-stream" in streaming["response_schemas"]["200"]
 
         preflight = await client.post("/api/targets/preflight", json={"target_url": "http://127.0.0.1:8001",
             "endpoint_path": candidate["path"], "method": candidate["method"],

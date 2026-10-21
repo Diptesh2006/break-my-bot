@@ -137,7 +137,8 @@ def reset_refund_state():
     return {"side_effect_count": 0, "reset": True}
 
 
-@app.post("/api/chat/sse")
+@app.post("/api/chat/sse", response_class=StreamingResponse,
+          responses={200: {"content": {"text/event-stream": {"schema": {"type": "string"}}}}})
 def chat_sse(request: SseChatRequest):
     question = request.messages[-1].content.casefold() if request.messages else ""
     answer = (demo_memory["refund_policy"] if "refund" in question
