@@ -9,7 +9,7 @@ from breakmybot.models import MemoryAssessment, MemoryCase, RunRecord, RunReques
 from breakmybot.memoryscope import evaluate as evaluate_memory
 from breakmybot.planner import mock_plan, plan
 from breakmybot.reports import generate
-from breakmybot.redaction import redact_payload
+from breakmybot.redaction import redact_payload, redact_text
 from breakmybot.scoring import calculate
 from breakmybot.target import identify_endpoints, validate_target
 
@@ -22,6 +22,12 @@ def test_target_policy_rejects_public_literal_ip():
 def test_payload_redaction_hides_credentials_recursively():
     assert redact_payload({"messages": [{"content": "safe", "api_key": "do-not-store"}]}) == {
         "messages": [{"content": "safe", "api_key": "[REDACTED]"}]}
+
+
+def test_response_redaction_hides_echoed_credentials_and_bearer_tokens():
+    response = 'echo=private-value Authorization: Bearer abc.def.ghi'
+    assert redact_text(response, {"api_key": "private-value"}) == (
+        'echo=[REDACTED] Authorization: Bearer [REDACTED]')
 
 
 def test_openapi_discovery_prefers_chat_and_builds_payload():
@@ -74,17 +80,18 @@ async def test_runner_executes_and_persists_observed_scenarios(tmp_path: Path, m
     store.save(run)
 
     async def observed_invocation(*_args, **_kwargs):
-        return 200, '{"answer":"ok"}', 5.5, "application/json"
+        return 200, '{"answer":"ok","api_key":"test-secret"}', 5.5, "application/json"
 
     monkeypatch.setattr(runner, "invoke", observed_invocation)
     request = RunRequest(target_url="http://127.0.0.1:8001", endpoint_path="/api/chat", method="GET",
-        profile="standard", expected_substring="ok")
+        profile="standard", expected_substring="ok", payload={"api_key": "test-secret"})
     result = await runner.execute(run.id, request)
     persisted = store.get(run.id)
     assert result.status == "COMPLETED"
     assert result.scoring["overall_score"] == 100
     assert result.scoring["category_scores"]["Output correctness"]["score"] == 100
     assert persisted is not None and len(persisted.scenarios) == 15
+    assert "test-secret" not in str(persisted.scenarios)
     assert all(Path(path).is_file() for path in persisted.report_paths.values())
 
 

@@ -9,6 +9,7 @@ import httpx
 
 from . import memoryscope, planner, reports, scoring, store
 from .models import RunRecord, RunRequest, ScenarioResult
+from .redaction import redact_text
 from .target import invoke, validate_target
 
 
@@ -55,16 +56,17 @@ async def execute(run_id: str, request: RunRequest, cancel: asyncio.Event | None
                 break
             scenario_id = "baseline" if index == 0 else f"repeat-{index}"
             try:
-                status, body, duration, content_type = await invoke(str(request.target_url), request.endpoint_path,
+                status, raw_body, duration, content_type = await invoke(str(request.target_url), request.endpoint_path,
                     request.method, request.payload, min(timeout, request.max_latency_seconds),
                     docker_mode=os.getenv("BREAKMYBOT_DOCKER_MODE", "false").lower() == "true", headers=headers)
+                body = redact_text(raw_body, request.payload, (token,) if request.auth_env else ())
                 success = 200 <= status < 300
                 state = "PASSED" if success else "VERIFIED_FAILURE"
                 severity = "high" if status >= 500 else "medium" if status >= 400 else "info"
                 evidence = {"response_excerpt": body[:1200], "content_type": content_type,
                     "assertion": "HTTP status is 2xx", "assertion_passed": success}
                 if request.expected_substring:
-                    matched = request.expected_substring.casefold() in body.casefold()
+                    matched = request.expected_substring.casefold() in raw_body.casefold()
                     evidence["expected_substring"] = request.expected_substring
                     evidence["expected_substring_passed"] = matched
                     if not matched:
@@ -75,7 +77,7 @@ async def execute(run_id: str, request: RunRequest, cancel: asyncio.Event | None
                     category="HTTP reliability", status=state, severity=severity,
                     duration_ms=round(duration, 2), http_status=status, evidence=evidence))
                 store.append_event(run.id, {"type": "scenario.completed", "scenario_id": scenario_id, "status": state, "http_status": status})
-                if "[response body truncated after 1 MB]" in body:
+                if "[response body truncated after 1 MB]" in raw_body:
                     contract_ok = None
                     contract_evidence = {"contract": "response body capped at 1 MB", "truncated": True}
                 elif status == 204:
@@ -83,21 +85,21 @@ async def execute(run_id: str, request: RunRequest, cancel: asyncio.Event | None
                     contract_evidence = {"contract": "HTTP 204 may have an empty body"}
                 elif "json" in content_type.casefold():
                     try:
-                        json.loads(body)
-                        contract_ok = bool(body.strip())
+                        json.loads(raw_body)
+                        contract_ok = bool(raw_body.strip())
                         contract_evidence = {"contract": "response declares JSON and parses as JSON", "parse_passed": True}
                     except (json.JSONDecodeError, UnicodeDecodeError):
                         contract_ok = False
                         contract_evidence = {"contract": "response declares JSON and parses as JSON", "parse_passed": False}
                 else:
-                    contract_ok = bool(body.strip())
+                    contract_ok = bool(raw_body.strip())
                     contract_evidence = {"contract": "non-empty response body unless HTTP 204", "body_nonempty": contract_ok}
                 run.scenarios.append(ScenarioResult(scenario_id=f"contract-{index}", name=f"Response contract {index+1}",
                     category="Response validity", status="INCONCLUSIVE" if contract_ok is None else "PASSED" if contract_ok else "VERIFIED_FAILURE",
                     severity="info" if contract_ok else "medium", duration_ms=round(duration, 2), http_status=status,
                     evidence=contract_evidence))
                 if request.expected_substring:
-                    expected_ok = request.expected_substring.casefold() in body.casefold()
+                    expected_ok = request.expected_substring.casefold() in raw_body.casefold()
                     run.scenarios.append(ScenarioResult(scenario_id=f"expected-{index}", name=f"Expected response content {index+1}",
                         category="Output correctness", status="PASSED" if expected_ok else "VERIFIED_FAILURE",
                         severity="info" if expected_ok else "high", duration_ms=round(duration, 2), http_status=status,
