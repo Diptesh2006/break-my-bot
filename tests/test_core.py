@@ -1,6 +1,8 @@
+import json
 from pathlib import Path
 
 import pytest
+import httpx
 from httpx import ASGITransport, AsyncClient
 
 from breakmybot import runner, store
@@ -118,6 +120,54 @@ async def test_memoryscope_bridge_skips_without_explicit_nrouter_consent():
     assert len(results) == 1
     assert results[0].status == "SKIPPED"
     assert "not authorized" in results[0].limitation
+
+
+@pytest.mark.asyncio
+async def test_memoryscope_bridge_imports_only_contract_backed_external_case_results(monkeypatch):
+    manifest = {"contract": "memoryscope-answer-evaluation-v1", "capabilities": {
+        "external_agent_answer_evaluation": True}}
+    run = {"id": "memory-run-1", "status": "completed", "results": [{
+        "name": "refund", "status": "pass", "answer": "Refunds within 14 days.",
+        "checks": [{"check": "required_literal", "passed": True}],
+        "judge": {"verdict": "pass", "answer_quote": "14 days", "reference_quote": "14 days"},
+        "answer_latency_ms": 12.5}]}
+
+    def respond(request):
+        if request.url.path == "/api/beta/capabilities":
+            return httpx.Response(200, json=manifest)
+        if request.url.path == "/api/beta/settings":
+            return httpx.Response(200, json={"judge_configured": True})
+        if request.method == "POST" and request.url.path == "/api/beta/runs":
+            payload = json.loads(request.content)
+            assert payload["send_to_judge"] is True
+            assert payload["endpoint"] == "http://127.0.0.1:8001/api/chat/sse"
+            return httpx.Response(202, json={"id": run["id"]})
+        if request.url.path == "/api/beta/runs/memory-run-1":
+            return httpx.Response(200, json=run)
+        raise AssertionError(f"Unexpected MemoryScope request: {request.method} {request.url}")
+
+    original_client = httpx.AsyncClient
+
+    def client_factory(*args, **kwargs):
+        return original_client(*args, **kwargs, transport=httpx.MockTransport(respond))
+
+    async def no_wait(_seconds):
+        return None
+
+    monkeypatch.setattr("breakmybot.memoryscope.httpx.AsyncClient", client_factory)
+    monkeypatch.setattr("breakmybot.memoryscope.asyncio.sleep", no_wait)
+    monkeypatch.setenv("MEMORYSCOPE_API_URL", "http://127.0.0.1:8002")
+    request = RunRequest(target_url="http://127.0.0.1:8001", endpoint_path="/api/chat", method="POST",
+        payload={"message": "hello"}, application_name="support")
+    config = MemoryAssessment(agent_path="/api/chat/sse", cases=[MemoryCase(name="refund",
+        question="Refund window?", reference="Refunds within 14 days.", expected="14 days"),
+        ], send_to_nrouter=True)
+
+    results = await evaluate_memory(request, config)
+
+    assert len(results) == 1
+    assert results[0].status == "PASSED"
+    assert results[0].evidence["judge"]["verdict"] == "pass"
 
 
 def test_memoryscope_contract_accepts_only_advertised_answer_evaluation():
