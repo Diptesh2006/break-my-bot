@@ -44,7 +44,12 @@ async def _run_instrumented_scenarios(run: RunRecord, request: RunRequest, timeo
             limitation="Instrumentation bearer credentials require HTTPS for non-loopback targets.")]
     if os.getenv("BREAKMYBOT_DOCKER_MODE", "false").lower() == "true":
         control_url = docker_resolve_url(control_url)
-    validate_target(control_url)
+    try:
+        validate_target(control_url)
+    except ValueError:
+        return [ScenarioResult(scenario_id="instrumentation-target-policy", name="Instrumentation target policy",
+            category="Tool reliability", status="SETUP_ERROR",
+            limitation="Instrumentation control URL failed the configured target network policy.")]
     results: list[ScenarioResult] = []
     async with httpx.AsyncClient(timeout=min(timeout, 15), follow_redirects=False,
                                  trust_env=False) as client:

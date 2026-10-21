@@ -98,15 +98,18 @@ async def test_instrumentation_control_session_arms_injects_observes_and_cleans_
 
     async with AsyncClient(transport=ASGITransport(app=target), base_url="http://test") as client:
         assert (await client.get("/__breakmybot__/capabilities")).json()["contract"] == "breakmybot-instrumentation-v1"
-        assert (await client.put("/__breakmybot__/sessions/test-run", json={"tool": "catalog", "kind": "timeout"})).status_code == 401
+        session_id = "a" * 32
+        assert (await client.put(f"/__breakmybot__/sessions/{session_id}", json={"tool": "catalog", "kind": "timeout"})).status_code == 401
         headers = {"Authorization": f"Bearer {token}"}
-        armed = await client.put("/__breakmybot__/sessions/test-run", json={"tool": "catalog", "kind": "timeout"}, headers=headers)
+        invalid = await client.put("/__breakmybot__/sessions/unsafe", json={"tool": "catalog", "kind": "timeout"}, headers=headers)
+        assert invalid.status_code == 422
+        armed = await client.put(f"/__breakmybot__/sessions/{session_id}", json={"tool": "catalog", "kind": "timeout"}, headers=headers)
         assert armed.status_code == 200 and armed.json()["armed"]
-        response = await client.post("/chat", headers={"X-BreakMyBot-Session": "test-run"})
+        response = await client.post("/chat", headers={"X-BreakMyBot-Session": session_id})
         assert response.json()["answer"] == "safe fallback"
-        events = await client.get("/__breakmybot__/sessions/test-run/events", headers=headers)
+        events = await client.get(f"/__breakmybot__/sessions/{session_id}/events", headers=headers)
         assert events.json()["events"][0]["type"] == "fault.injected"
-        cleanup = await client.delete("/__breakmybot__/sessions/test-run", headers=headers)
+        cleanup = await client.delete(f"/__breakmybot__/sessions/{session_id}", headers=headers)
         assert cleanup.status_code == 200 and cleanup.json()["cleaned_up"]
     assert controller._sessions == {}
 

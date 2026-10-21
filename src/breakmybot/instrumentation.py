@@ -188,6 +188,10 @@ def instrument(app: FastAPI, *, token: str, enabled: bool = False) -> ToolFaultC
         if not authorization or not hmac.compare_digest(authorization, f"Bearer {token}"):
             raise HTTPException(status_code=401, detail="Unauthorized")
 
+    def validate_session_id(session_id: str) -> None:
+        if not re.fullmatch(r"[a-f0-9]{32}", session_id):
+            raise HTTPException(status_code=422, detail="Invalid instrumentation session identifier")
+
     @router.get("/capabilities")
     async def capabilities():
         return {"contract": "breakmybot-instrumentation-v1", "tool_fault_injection": True,
@@ -196,6 +200,7 @@ def instrument(app: FastAPI, *, token: str, enabled: bool = False) -> ToolFaultC
     @router.put("/sessions/{session_id}")
     async def arm(session_id: str, request: _ArmRequest, authorization: str | None = Header(default=None)):
         authorize(authorization)
+        validate_session_id(session_id)
         try:
             controller.arm(session_id, (ToolFault(tool=request.tool, kind=request.kind,
                 delay_seconds=request.delay_seconds, every_n_calls=request.every_n_calls),))
@@ -206,6 +211,7 @@ def instrument(app: FastAPI, *, token: str, enabled: bool = False) -> ToolFaultC
     @router.get("/sessions/{session_id}/events")
     async def events(session_id: str, authorization: str | None = Header(default=None)):
         authorize(authorization)
+        validate_session_id(session_id)
         try:
             return {"session_id": session_id, "events": controller.read_events(session_id)}
         except KeyError as exc:
@@ -214,6 +220,7 @@ def instrument(app: FastAPI, *, token: str, enabled: bool = False) -> ToolFaultC
     @router.delete("/sessions/{session_id}")
     async def disarm(session_id: str, authorization: str | None = Header(default=None)):
         authorize(authorization)
+        validate_session_id(session_id)
         if not controller.disarm(session_id):
             raise HTTPException(status_code=404, detail="Session not found")
         return {"session_id": session_id, "cleaned_up": True}
