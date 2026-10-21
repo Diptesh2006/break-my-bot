@@ -166,6 +166,7 @@ class RunRequest(BaseModel):
     application_name: str | None = None
     expected_substring: str | None = None
     allow_repeated_post: bool = False
+    concurrency_requests: int = Field(default=0, ge=0, le=5)
     auth_env: str | None = Field(default=None, pattern=r"^[A-Z][A-Z0-9_]{1,100}$")
     auth_header: str = Field(default="Authorization", pattern=r"^[A-Za-z0-9-]{1,64}$")
     auth_scheme: str = Field(default="Bearer", max_length=24, pattern=r"^[A-Za-z0-9_-]*$")
@@ -183,6 +184,10 @@ class RunRequest(BaseModel):
 
     @model_validator(mode="after")
     def validate_planned_execution_opt_in(self):
+        if self.concurrency_requests == 1:
+            raise ValueError("concurrency probe must be disabled (0) or request 2-5 concurrent calls")
+        if self.concurrency_requests and self.method != "GET" and not self.allow_repeated_post:
+            raise ValueError("non-GET concurrency probes require explicit repeated-call authorization")
         if self.instrumented_memory_assessment is not None and not self.execute_memory_scenarios:
             raise ValueError("instrumented memory scenarios require explicit execution consent")
         if self.execute_memory_scenarios and self.instrumented_memory_assessment is None:

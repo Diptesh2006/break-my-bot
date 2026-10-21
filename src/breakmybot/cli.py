@@ -59,6 +59,8 @@ def test(
     profile: str = typer.Option("standard", help="quick, standard, or deep"),
     expected: str | None = typer.Option(None, "--expected", help="Optional exact substring expected in responses"),
     allow_repeated_post: bool = typer.Option(False, "--allow-repeated-post", help="Authorize repeated non-GET requests to the selected test endpoint"),
+    concurrency_requests: int = typer.Option(0, "--concurrency-requests", min=0, max=5,
+        help="Opt in to 2-5 simultaneous baseline requests; 0 disables the probe"),
     auth_env: str | None = typer.Option(None, "--auth-env", help="Environment variable name containing the target bearer token"),
     memory_cases: Path | None = typer.Option(None, "--memory-cases", help="JSON array of approved MemoryScope reference cases"),
     memory_agent_path: str | None = typer.Option(None, "--memory-agent-path", help="SSE chat path on the same target origin"),
@@ -74,7 +76,9 @@ def test(
     """Discover and run bounded black-box HTTP checks."""
     if profile not in {"quick", "standard", "deep"}:
         raise typer.BadParameter("profile must be quick, standard, or deep")
-    console.print("[bold]BREAKMYBOT[/bold]\nWe break your AI so your users don't have to.\n")
+    if concurrency_requests == 1:
+        raise typer.BadParameter("concurrency-requests must be 0 (disabled) or between 2 and 5")
+    console.print("[bold]BREAKMYBOT[/bold]\nBreak your AI so your users don't have to.\n")
     url = url or Prompt.ask("AI application URL")
     discovered = api_request("POST", "/api/targets/discover", json={"url": url})
     if not discovered["reachable"]:
@@ -129,6 +133,12 @@ def test(
             raise typer.BadParameter("payload JSON must be valid JSON") from exc
         if not isinstance(payload, dict):
             raise typer.BadParameter("payload JSON must be an object")
+    if concurrency_requests and method != "GET" and not allow_repeated_post:
+        raise typer.BadParameter("non-GET concurrency probes require --allow-repeated-post")
+    if concurrency_requests and not Confirm.ask(
+            f"Authorize {concurrency_requests} simultaneous requests to this target? This may increase load.",
+            default=False):
+        concurrency_requests = 0
     if method != "GET" and not Confirm.ask("Confirm endpoint and payload are safe for a test invocation", default=False):
         console.print("Cancelled before sending the target request.")
         raise typer.Exit(code=4)
@@ -229,7 +239,8 @@ def test(
             execute_planned_scenarios = False
     created = api_request("POST", "/api/runs", json={"target_url": url, "endpoint_path": endpoint,
         "method": method, "payload": payload, "profile": profile, "application_name": discovered.get("application_name"),
-        "expected_substring": expected, "allow_repeated_post": allow_repeated_post, "auth_env": auth_env,
+        "expected_substring": expected, "allow_repeated_post": allow_repeated_post,
+        "concurrency_requests": concurrency_requests, "auth_env": auth_env,
         "memory_assessment": memory_assessment, "instrumented_assessment": instrumented_assessment,
         "instrumented_memory_assessment": instrumented_memory_assessment,
         "execute_memory_scenarios": execute_memory_scenarios,

@@ -26,7 +26,8 @@ def _scenario_event(run_id: str, result: ScenarioResult, completed: int) -> None
     allowed = {"response_excerpt", "content_type", "assertion_passed", "fault_injected",
         "injection_events", "cleanup_succeeded", "http_status", "invocation_error",
         "expected_substring_passed", "threshold_ms", "timeout_ms", "error_type",
-        "contract", "body_nonempty", "parse_passed", "steps", "assertions"}
+        "contract", "body_nonempty", "parse_passed", "steps", "assertions",
+        "concurrency", "request_statuses", "request_durations_ms", "error_types"}
     store.append_event(run_id, {"type": "scenario.completed", "scenario_id": result.scenario_id,
         "name": result.name, "category": result.category, "status": result.status,
         "severity": result.severity, "http_status": result.http_status,
@@ -485,6 +486,40 @@ def _contains_ordered_faults(observed: list[dict], expected: list[dict]) -> bool
     return cursor == len(expected)
 
 
+async def _run_concurrency_probe(request: RunRequest, timeout: float,
+                                 headers: dict[str, str] | None,
+                                 cancel: asyncio.Event | None) -> ScenarioResult:
+    if cancel and cancel.is_set():
+        return ScenarioResult(scenario_id="concurrency", name="Concurrent request handling",
+            category="HTTP reliability", status="SKIPPED",
+            limitation="Concurrency probe cancelled before requests were sent.")
+    started = asyncio.get_running_loop().time()
+    tasks = [invoke(str(request.target_url), request.endpoint_path, request.method,
+        request.payload, min(timeout, request.max_latency_seconds),
+        docker_mode=os.getenv("BREAKMYBOT_DOCKER_MODE", "false").lower() == "true",
+        headers=headers) for _ in range(request.concurrency_requests)]
+    outcomes = await asyncio.gather(*tasks, return_exceptions=True)
+    durations = [round(outcome[2], 2) for outcome in outcomes if not isinstance(outcome, BaseException)]
+    statuses = [outcome[0] for outcome in outcomes if not isinstance(outcome, BaseException)]
+    errors = [type(outcome).__name__ for outcome in outcomes if isinstance(outcome, BaseException)]
+    within_latency = all(value <= request.max_latency_seconds * 1000 for value in durations)
+    succeeded = (not errors and len(statuses) == request.concurrency_requests
+        and all(200 <= status < 300 for status in statuses) and within_latency)
+    failed_status = next((status for status in statuses if not 200 <= status < 300), None)
+    result = ScenarioResult(scenario_id="concurrency", name="Concurrent request handling",
+        category="HTTP reliability", status="PASSED" if succeeded else "VERIFIED_FAILURE",
+        severity="info" if succeeded else "high" if errors or any(status >= 500 for status in statuses) else "medium",
+        duration_ms=round((asyncio.get_running_loop().time() - started) * 1000, 2),
+        http_status=failed_status if failed_status is not None else (
+            statuses[0] if statuses and all(status == statuses[0] for status in statuses) else None),
+        evidence={"concurrency": request.concurrency_requests, "request_statuses": statuses,
+            "request_durations_ms": durations, "error_types": errors,
+            "threshold_ms": request.max_latency_seconds * 1000,
+            "assertion_passed": succeeded},
+        limitation=None if succeeded else "One or more concurrent requests failed, returned non-2xx, or exceeded the latency threshold.")
+    return result
+
+
 async def execute(run_id: str, request: RunRequest, cancel: asyncio.Event | None = None) -> RunRecord:
     run = store.get(run_id)
     if not run:
@@ -620,6 +655,16 @@ async def execute(run_id: str, request: RunRequest, cancel: asyncio.Event | None
                 _scenario_event(run.id, run.scenarios[-1], len(run.scenarios))
                 run.status = "PARTIAL"
                 break
+        if request.concurrency_requests:
+            if run.status == "PARTIAL":
+                concurrency_result = ScenarioResult(scenario_id="concurrency",
+                    name="Concurrent request handling", category="HTTP reliability", status="SETUP_ERROR",
+                    limitation="Concurrency probe was not started because the baseline invocation failed.")
+            else:
+                _phase(run.id, "CONCURRENCY", requests=request.concurrency_requests)
+                concurrency_result = await _run_concurrency_probe(request, timeout, headers, cancel)
+            run.scenarios.append(concurrency_result)
+            _scenario_event(run.id, concurrency_result, len(run.scenarios))
         memory_categories = {item.category for item in request.instrumented_memory_assessment.scenarios} \
             if request.instrumented_memory_assessment else set()
         unsupported = [] if request.instrumented_memory_assessment is None or "access_boundaries" in memory_categories else [

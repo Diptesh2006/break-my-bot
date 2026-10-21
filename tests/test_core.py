@@ -602,6 +602,66 @@ def test_openapi_discovery_exposes_health_routes_response_schemas_and_sse():
     assert identify_health_endpoints(spec) == ["GET /healthz"]
 
 
+@pytest.mark.asyncio
+async def test_opt_in_concurrency_probe_runs_bounded_requests_in_parallel(monkeypatch):
+    import asyncio
+
+    request = RunRequest(target_url="http://127.0.0.1:8000", endpoint_path="/chat",
+        method="GET", concurrency_requests=3)
+    active = 0
+    maximum_active = 0
+
+    async def fake_invoke(*_args, **_kwargs):
+        nonlocal active, maximum_active
+        active += 1
+        maximum_active = max(maximum_active, active)
+        await asyncio.sleep(0.01)
+        active -= 1
+        return 200, '{"answer":"ok"}', 10.0, "application/json"
+
+    monkeypatch.setattr(runner, "invoke", fake_invoke)
+    result = await runner._run_concurrency_probe(request, 5, None, None)
+    assert result.status == "PASSED"
+    assert result.evidence["concurrency"] == 3
+    assert result.evidence["request_statuses"] == [200, 200, 200]
+    assert maximum_active == 3
+
+
+def test_concurrency_probe_requires_bounded_size_and_non_get_repeat_authorization():
+    with pytest.raises(ValueError, match="2-5 concurrent"):
+        RunRequest(target_url="http://127.0.0.1:8000", endpoint_path="/chat",
+            method="GET", concurrency_requests=1)
+    with pytest.raises(ValueError, match="repeated-call authorization"):
+        RunRequest(target_url="http://127.0.0.1:8000", endpoint_path="/chat",
+            method="POST", concurrency_requests=2)
+
+
+@pytest.mark.asyncio
+async def test_full_runner_persists_opt_in_concurrency_result(tmp_path, monkeypatch):
+    monkeypatch.setenv("BREAKMYBOT_DATA_DIR", str(tmp_path))
+    monkeypatch.delenv("BREAKMYBOT_DATABASE_URL", raising=False)
+    request = RunRequest(target_url="http://127.0.0.1:8000", endpoint_path="/health",
+        method="GET", profile="quick", concurrency_requests=2)
+    run = RunRecord(target_url=str(request.target_url), endpoint_path=request.endpoint_path,
+        method=request.method, profile=request.profile)
+    store.save(run)
+    invocations = 0
+
+    async def fake_invoke(*_args, **_kwargs):
+        nonlocal invocations
+        invocations += 1
+        return 200, '{"status":"ok"}', 5.0, "application/json"
+
+    monkeypatch.setattr(runner, "invoke", fake_invoke)
+    completed = await runner.execute(run.id, request)
+    persisted = store.get(run.id)
+    result = next(item for item in completed.scenarios if item.scenario_id == "concurrency")
+    assert invocations == 3  # one baseline plus the two explicitly requested simultaneous calls
+    assert result.status == "PASSED"
+    assert result.evidence["request_statuses"] == [200, 200]
+    assert persisted is not None and persisted.status == "COMPLETED"
+
+
 def test_score_excludes_unsupported_from_passes_and_keeps_coverage_separate():
     run = RunRecord(target_url="http://localhost:8000", endpoint_path="/chat", method="POST", profile="standard")
     run.scenarios = [
