@@ -10,11 +10,14 @@ from fastapi import FastAPI
 from httpx import ASGITransport
 
 from breakmybot import runner, store
+from breakmybot.instrumentation import instrument
 from breakmybot.memory_adapter import MEMORY_CATEGORIES, instrument_memory
-from breakmybot.models import InstrumentedMemoryAssessment, RunRecord, RunRequest
+from breakmybot.models import (InstrumentedAssessment, InstrumentedMemoryAssessment,
+    RunRecord, RunRequest)
 
 
 TOKEN = "memory-adapter-test-token-0123456789"
+TOOL_TOKEN = "tool-adapter-test-token-0123456789"
 
 
 def test_memory_adapter_auth_seed_and_restore_contract():
@@ -133,6 +136,65 @@ async def test_runner_seeds_real_memory_checks_target_and_restores(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_combined_stale_memory_and_tool_timeout_uses_one_session_and_cleans_both(monkeypatch):
+    app = FastAPI()
+    state = {"policy": "14 days"}
+    tool_faults = instrument(app, token=TOOL_TOKEN, enabled=True)
+    memory_controls = instrument_memory(app, token=TOKEN,
+        snapshot=lambda _scope: copy.deepcopy(state),
+        seed=lambda _scope, values: state.update(values),
+        restore=lambda _scope, old: (state.clear(), state.update(old)),
+        categories=("outdated_knowledge",), enabled=True)
+    assert memory_controls is not None
+
+    @app.post("/chat")
+    async def chat(_payload: dict):
+        try:
+            answer = await tool_faults.invoke("refund_policy", lambda: state["policy"])
+        except TimeoutError:
+            answer = "I cannot verify this right now. Please contact support."
+        return {"answer": answer}
+
+    real_async_client = httpx.AsyncClient
+    monkeypatch.setattr(runner.httpx, "AsyncClient", lambda **kwargs: real_async_client(
+        transport=ASGITransport(app=app), **kwargs))
+
+    async def invoke(_url, path, method, payload, _timeout, **kwargs):
+        async with real_async_client(transport=ASGITransport(app=app),
+                base_url="http://localhost:8000") as target:
+            response = await target.request(method, path, json=payload, headers=kwargs.get("headers"))
+        return response.status_code, response.text, 1.0, response.headers.get("content-type", "")
+
+    monkeypatch.setattr(runner, "invoke", invoke)
+    monkeypatch.setenv("BREAKMYBOT_MEMORY_TEST_TOKEN", TOKEN)
+    monkeypatch.setenv("BREAKMYBOT_INSTRUMENTATION_TEST_TOKEN", TOOL_TOKEN)
+    request = RunRequest(target_url="http://localhost:8000", endpoint_path="/chat", method="POST",
+        allow_repeated_post=True,
+        instrumented_assessment={"auth_env": "BREAKMYBOT_INSTRUMENTATION_TEST_TOKEN", "faults": [{
+            "tool": "refund_policy", "kind": "timeout", "expected_substring": "contact support"}]},
+        instrumented_memory_assessment={"auth_env": "BREAKMYBOT_MEMORY_TEST_TOKEN", "scenarios": [{
+            "id": "stale-policy-timeout", "name": "Stale policy plus timeout fallback",
+            "category": "outdated_knowledge", "endpoint_path": "/chat",
+            "payload": {"question": "refund window"}, "scope": {"user": "isolated-demo"},
+            "seed": {"policy": "30 days"}, "expected_literals": ["contact support"],
+            "forbidden_literals": ["30 days"],
+            "faults": [{"tool": "refund_policy", "kind": "timeout"}]}]},
+        execute_memory_scenarios=True)
+
+    result = await runner._run_memory_scenarios(request, 3, None, None)
+    combined = result[0]
+    assert combined.status == "PASSED"
+    assert combined.evidence["fault_injected"] is True
+    assert combined.evidence["memory_cleanup_succeeded"] is True
+    assert combined.evidence["tool_cleanup_succeeded"] is True
+    assert combined.evidence["steps"][0]["assertions"] == {
+        "expected_literal_1": True, "forbidden_literal_1": True}
+    assert state["policy"] == "14 days"
+    assert memory_controls._sessions == {}
+    assert tool_faults._sessions == {}
+
+
+@pytest.mark.asyncio
 async def test_full_runner_persists_verified_memory_finding_and_restored_state(tmp_path, monkeypatch):
     app = FastAPI()
     state = {"policy": "14 days"}
@@ -218,6 +280,21 @@ def test_memory_scenarios_require_explicit_execution_opt_in():
                     "endpoint_path": "/chat", "scope": {"user": "demo"}, "seed": {"x": "y"},
                     "expected_literals": ["safe"]}]}, execute_memory_scenarios=True)
 
+    combined_case = {"id": "combined", "name": "Memory plus timeout",
+        "category": "outdated_knowledge", "endpoint_path": "/chat", "scope": {"user": "demo"},
+        "seed": {"fact": "stale"}, "expected_literals": ["support"],
+        "faults": [{"tool": "policy", "kind": "timeout"}]}
+    with pytest.raises(ValueError, match="operator-approved tool fault allowlist"):
+        RunRequest(target_url="http://localhost:8000", endpoint_path="/chat", method="GET",
+            instrumented_memory_assessment={"auth_env": "BREAKMYBOT_MEMORY_TEST_TOKEN",
+                "scenarios": [combined_case]}, execute_memory_scenarios=True)
+    with pytest.raises(ValueError, match="only operator-approved faults"):
+        RunRequest(target_url="http://localhost:8000", endpoint_path="/chat", method="GET",
+            instrumented_assessment={"auth_env": "BREAKMYBOT_INSTRUMENTATION_TEST_TOKEN",
+                "faults": [{"tool": "policy", "kind": "exception"}]},
+            instrumented_memory_assessment={"auth_env": "BREAKMYBOT_MEMORY_TEST_TOKEN",
+                "scenarios": [combined_case]}, execute_memory_scenarios=True)
+
 
 def test_memory_assessment_model_validates_categories_and_path_origin():
     with pytest.raises(ValueError):
@@ -241,7 +318,12 @@ def test_cross_context_memory_cases_require_multiple_observed_calls():
 
 
 def test_bundled_demo_memory_scenario_matches_cli_contract():
-    path = Path(__file__).resolve().parents[1] / "examples" / "demo-agent" / "memory-scenarios.json"
-    cases = json.loads(path.read_text(encoding="utf-8"))
+    examples = Path(__file__).resolve().parents[1] / "examples" / "demo-agent"
+    cases = json.loads((examples / "memory-scenarios.json").read_text(encoding="utf-8"))
     validated = InstrumentedMemoryAssessment(auth_env="BREAKMYBOT_MEMORY_TOKEN", scenarios=cases)
     assert validated.scenarios[0].category == "outdated_knowledge"
+    approved_raw = json.loads((examples / "memory-combined-faults.json").read_text(encoding="utf-8"))
+    approved = InstrumentedAssessment(auth_env="BREAKMYBOT_INSTRUMENTATION_TOKEN", faults=approved_raw)
+    approved_faults = [fault.model_dump(exclude={"expected_substring"}) for fault in approved.faults]
+    assert all(fault.model_dump(exclude={"expected_substring"}) in approved_faults
+        for scenario in validated.scenarios for fault in scenario.faults)

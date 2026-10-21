@@ -1,0 +1,7 @@
+[
+  {
+    "tool": "refund_policy",
+    "kind": "timeout",
+    "expected_substring": "contact support"
+  }
+]

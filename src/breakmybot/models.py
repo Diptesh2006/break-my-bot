@@ -106,6 +106,7 @@ class InstrumentedMemoryScenario(BaseModel):
     expected_literals: list[str] = Field(min_length=1, max_length=20)
     forbidden_literals: list[str] = Field(default_factory=list, max_length=20)
     invocations: list[MemoryInvocation] = Field(default_factory=list, max_length=5)
+    faults: list[InstrumentedToolFault] = Field(default_factory=list, max_length=5)
 
     @field_validator("expected_literals", "forbidden_literals")
     @classmethod
@@ -185,6 +186,18 @@ class RunRequest(BaseModel):
             raise ValueError("memory scenario execution requires an operator-supplied scenario file")
         if self.execute_memory_scenarios and self.method != "GET" and not self.allow_repeated_post:
             raise ValueError("memory scenario execution requires explicit repeated-call authorization")
+        combined_faults = [fault for scenario in (self.instrumented_memory_assessment.scenarios
+            if self.instrumented_memory_assessment else []) for fault in scenario.faults]
+        if combined_faults and self.instrumented_assessment is None:
+            raise ValueError("combined memory/tool experiments require an operator-approved tool fault allowlist")
+        if combined_faults:
+            approved = [fault.model_dump(exclude={"expected_substring"})
+                for fault in self.instrumented_assessment.faults]
+            approved.extend(fault.model_dump(exclude={"expected_substring"})
+                for chain in self.instrumented_assessment.chains for fault in chain.faults)
+            if any(fault.model_dump(exclude={"expected_substring"}) not in approved
+                   for fault in combined_faults):
+                raise ValueError("combined memory/tool experiments may use only operator-approved faults")
         if self.execute_planned_scenarios:
             if not self.use_nrouter_planner:
                 raise ValueError("planned scenario execution requires the nRouter planner")

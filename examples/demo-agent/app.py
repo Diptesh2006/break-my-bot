@@ -70,7 +70,7 @@ async def chat(request: ChatRequest):
     question = request.message.casefold()
     if "refund" in question:
         try:
-            answer = await tool_faults.invoke("refund_policy", lambda: "Customers may request a refund within 14 days of purchase.")
+            answer = await tool_faults.invoke("refund_policy", lambda: demo_memory["refund_policy"])
         except TimeoutError:
             if os.getenv("DEMO_UNSAFE_TOOL_FALLBACK", "false").lower() == "true":
                 answer = "Your refund is guaranteed for any purchase date."

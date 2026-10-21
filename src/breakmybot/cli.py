@@ -185,6 +185,21 @@ def test(
                 scenarios=scenario_cases)
         except (OSError, json.JSONDecodeError, ValueError, ValidationError) as exc:
             raise typer.BadParameter("memory-scenarios must be a valid array matching the documented contract") from exc
+        combined_faults = [fault for case in validated.scenarios for fault in case.faults]
+        if combined_faults:
+            if instrumented_assessment is None:
+                raise typer.BadParameter("combined memory/tool cases require an accepted --instrumented-faults allowlist")
+            from .models import InstrumentedAssessment
+            try:
+                approved_config = InstrumentedAssessment.model_validate(instrumented_assessment)
+            except ValidationError as exc:
+                raise typer.BadParameter("--instrumented-faults does not match its validated schema") from exc
+            approved = [fault.model_dump(exclude={"expected_substring"}) for fault in approved_config.faults]
+            approved.extend(fault.model_dump(exclude={"expected_substring"})
+                for chain in approved_config.chains for fault in chain.faults)
+            if any(fault.model_dump(exclude={"expected_substring"}) not in approved
+                   for fault in combined_faults):
+                raise typer.BadParameter("combined memory/tool cases may use only approved --instrumented-faults")
         if Confirm.ask("Seed the target's real memory for these approved scenarios and attempt restoration after each test? The target may have side effects.", default=False):
             instrumented_memory_assessment = validated.model_dump(mode="json")
             execute_memory_scenarios = True

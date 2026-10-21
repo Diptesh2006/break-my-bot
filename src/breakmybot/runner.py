@@ -259,6 +259,15 @@ async def _run_memory_scenarios(request: RunRequest, timeout: float,
     parsed = urlsplit(str(request.target_url))
     origin = urlunsplit((parsed.scheme, parsed.netloc, "", "", ""))
     control_url = origin + memory_adapter.MEMORY_CONTROL_PREFIX
+    combined_scenarios = [scenario for scenario in config.scenarios if scenario.faults]
+    tool_token = (os.getenv(request.instrumented_assessment.auth_env)
+        if combined_scenarios and request.instrumented_assessment else None)
+    if combined_scenarios and not tool_token:
+        return [ScenarioResult(scenario_id=f"memory-{scenario.id}", name=scenario.name,
+            category=score_category(scenario.category), status="SETUP_ERROR",
+            limitation="Combined memory/tool test requires the configured tool-instrumentation credential.")
+            for scenario in combined_scenarios]
+    tool_control_url = origin + instrumentation.CONTROL_PREFIX
     try:
         target_host = parsed.hostname or ""
         loopback = target_host.casefold() in {"localhost", "ip6-localhost"} or ipaddress.ip_address(target_host).is_loopback
@@ -291,6 +300,18 @@ async def _run_memory_scenarios(request: RunRequest, timeout: float,
             if manifest.get("contract") == memory_adapter.MEMORY_CONTRACT and manifest.get("snapshot_seed_restore") is True and isinstance(raw_categories, list):
                 available = categories.intersection(item for item in raw_categories if isinstance(item, str))
 
+            tool_supported = False
+            if combined_scenarios and tool_token:
+                try:
+                    if os.getenv("BREAKMYBOT_DOCKER_MODE", "false").lower() == "true":
+                        checked_tool_url = docker_resolve_url(tool_control_url)
+                    else:
+                        checked_tool_url = tool_control_url
+                    tool_supported = await instrumentation.verify_remote_instrumentation(client,
+                        checked_tool_url)
+                except (httpx.HTTPError, ValueError, TypeError, AttributeError):
+                    tool_supported = False
+
             seen: set[str] = set()
             for scenario in config.scenarios:
                 seen.add(scenario.category)
@@ -304,16 +325,33 @@ async def _run_memory_scenarios(request: RunRequest, timeout: float,
                         name=scenario.name, category=score_category(scenario.category), status="UNSUPPORTED",
                         limitation="NOT TESTED — target memory interface unavailable for this category."))
                     continue
+                if scenario.faults and not tool_supported:
+                    results.append(ScenarioResult(scenario_id=f"memory-{scenario.id}",
+                        name=scenario.name, category=score_category(scenario.category), status="SETUP_ERROR",
+                        limitation="Target did not advertise the required session-scoped tool-fault adapter."))
+                    continue
                 session_id = uuid4().hex
                 started = asyncio.get_running_loop().time()
                 seeded = False
                 arm_attempted = False
-                cleanup_ok = False
+                memory_cleanup_ok = True
+                tool_arm_attempted = False
+                tool_cleanup_ok = not bool(scenario.faults)
+                tool_events: list[dict] = []
                 state = "PASSED"
                 status_code = None
                 step_evidence: list[dict] = []
                 try:
+                    if scenario.faults:
+                        tool_arm_attempted = True
+                        resolved_tool_url = (docker_resolve_url(tool_control_url)
+                            if os.getenv("BREAKMYBOT_DOCKER_MODE", "false").lower() == "true"
+                            else tool_control_url)
+                        await instrumentation.arm_remote_fault(client, resolved_tool_url,
+                            tool_token, session_id, [fault.model_dump(exclude={"expected_substring"})
+                                for fault in scenario.faults])
                     arm_attempted = True
+                    memory_cleanup_ok = False
                     response = await client.put(f"{control_url}/sessions/{session_id}", headers=auth,
                         json={"scope": scenario.scope, "seed": scenario.seed})
                     response.raise_for_status()
@@ -341,6 +379,9 @@ async def _run_memory_scenarios(request: RunRequest, timeout: float,
                                 raise ValueError(f"Configured memory case credential {step.auth_env} is missing")
                             step_headers[step.auth_header] = f"{step.auth_scheme} {case_token}".strip()
                             extra_secrets.append(case_token)
+                        if scenario.faults:
+                            step_headers["X-BreakMyBot-Session"] = session_id
+                            extra_secrets.append(tool_token)
                         status_code, body, duration, _content_type = await invoke(
                             str(request.target_url), step.endpoint_path, request.method, step.payload,
                             timeout, docker_mode=os.getenv("BREAKMYBOT_DOCKER_MODE", "false").lower() == "true",
@@ -367,13 +408,40 @@ async def _run_memory_scenarios(request: RunRequest, timeout: float,
                         try:
                             cleanup = await client.delete(f"{control_url}/sessions/{session_id}", headers=auth)
                             cleanup_receipt = cleanup.json() if cleanup.is_success else {}
-                            cleanup_ok = (cleanup.is_success and isinstance(cleanup_receipt, dict)
+                            memory_cleanup_ok = (cleanup.is_success and isinstance(cleanup_receipt, dict)
                                 and cleanup_receipt.get("cleaned_up") is True)
                         except (httpx.HTTPError, ValueError, TypeError, AttributeError):
-                            cleanup_ok = False
+                            memory_cleanup_ok = False
+                    if tool_arm_attempted:
+                        resolved_tool_url = (docker_resolve_url(tool_control_url)
+                            if os.getenv("BREAKMYBOT_DOCKER_MODE", "false").lower() == "true"
+                            else tool_control_url)
+                        try:
+                            tool_events = await instrumentation.read_remote_events(client,
+                                resolved_tool_url, tool_token, session_id)
+                        except (httpx.HTTPError, ValueError, TypeError, AttributeError):
+                            tool_events = []
+                        try:
+                            tool_cleanup_ok = await instrumentation.cleanup_remote_session(client,
+                                resolved_tool_url, tool_token, session_id)
+                        except (httpx.HTTPError, ValueError, TypeError, AttributeError):
+                            tool_cleanup_ok = False
+                cleanup_ok = memory_cleanup_ok and tool_cleanup_ok
                 if not cleanup_ok:
                     state = "SETUP_ERROR"
+                expected_faults = [{"tool": fault.tool, "kind": fault.kind} for fault in scenario.faults]
+                observed_faults = [{"tool": event.get("tool"), "kind": event.get("kind")}
+                    for event in tool_events if event.get("type") == "fault.injected"]
+                fault_injected = _contains_ordered_faults(observed_faults, expected_faults) if scenario.faults else None
+                if cleanup_ok and scenario.faults and not fault_injected and state not in {"SETUP_ERROR", "SKIPPED"}:
+                    state = "INCONCLUSIVE"
                 evidence = {"steps": step_evidence, "cleanup_succeeded": cleanup_ok}
+                if scenario.faults:
+                    evidence.update({"memory_cleanup_succeeded": memory_cleanup_ok,
+                        "tool_cleanup_succeeded": tool_cleanup_ok, "fault_injected": fault_injected,
+                        "faults": expected_faults,
+                        "injection_events": [event for event in tool_events
+                            if event.get("type") in {"fault.injected", "fault.acknowledgment_lost"}]})
                 if status_code is not None:
                     evidence["http_status"] = status_code
                 results.append(ScenarioResult(scenario_id=f"memory-{scenario.id}",
@@ -381,7 +449,9 @@ async def _run_memory_scenarios(request: RunRequest, timeout: float,
                     severity="high" if state == "VERIFIED_FAILURE" else "info",
                     duration_ms=round((asyncio.get_running_loop().time() - started) * 1000, 2),
                     http_status=status_code, evidence=evidence,
-                    limitation=(None if state not in {"SETUP_ERROR", "SKIPPED"} else
+                    limitation=("Target did not confirm every configured tool fault in order; combined behavior is inconclusive."
+                        if state == "INCONCLUSIVE" and cleanup_ok else
+                        None if state not in {"SETUP_ERROR", "SKIPPED"} else
                         "Target memory restoration was not confirmed; result excluded from scoring."
                         if not cleanup_ok else
                         "Memory test did not complete; no result was scored." if state == "SETUP_ERROR" else
