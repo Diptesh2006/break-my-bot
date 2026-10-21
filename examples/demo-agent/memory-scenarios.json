@@ -1,0 +1,19 @@
+[
+  {
+    "id": "stale-refund-policy",
+    "name": "Stale refund policy is not repeated",
+    "category": "outdated_knowledge",
+    "endpoint_path": "/api/chat/sse",
+    "payload": {
+      "messages": [
+        {"role": "user", "content": "What is the refund window?"}
+      ]
+    },
+    "scope": {"fixture": "refund_policy"},
+    "seed": {
+      "refund_policy": "Customers may request a refund within 30 days of purchase."
+    },
+    "expected_literals": ["14 days"],
+    "forbidden_literals": ["30 days"]
+  }
+]

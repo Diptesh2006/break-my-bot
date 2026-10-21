@@ -1,0 +1,247 @@
+from __future__ import annotations
+
+import copy
+import json
+from pathlib import Path
+
+import httpx
+import pytest
+from fastapi import FastAPI
+from httpx import ASGITransport
+
+from breakmybot import runner, store
+from breakmybot.memory_adapter import MEMORY_CATEGORIES, instrument_memory
+from breakmybot.models import InstrumentedMemoryAssessment, RunRecord, RunRequest
+
+
+TOKEN = "memory-adapter-test-token-0123456789"
+
+
+def test_memory_adapter_auth_seed_and_restore_contract():
+    app = FastAPI()
+    state = {"policy": "current policy"}
+
+    def snapshot(_scope):
+        return copy.deepcopy(state)
+
+    def seed(_scope, values):
+        state.update(values)
+
+    def restore(_scope, previous):
+        state.clear()
+        state.update(previous)
+
+    controller = instrument_memory(app, token=TOKEN, snapshot=snapshot, seed=seed,
+        restore=restore, categories=["outdated_knowledge"], enabled=True)
+    assert controller is not None
+
+    async def exercise():
+        async with httpx.AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            manifest = await client.get("/__breakmybot__/memory/capabilities")
+            assert manifest.json()["contract"] == "breakmybot-memory-adapter-v1"
+            session = "a" * 32
+            denied = await client.put(f"/__breakmybot__/memory/sessions/{session}", json={
+                "scope": {"tenant": "t1"}, "seed": {"policy": "stale secret"}})
+            assert denied.status_code == 401
+            armed = await client.put(f"/__breakmybot__/memory/sessions/{session}",
+                headers={"Authorization": f"Bearer {TOKEN}"}, json={
+                    "scope": {"tenant": "t1"}, "seed": {"policy": "stale secret"}})
+            assert armed.status_code == 200 and state["policy"] == "stale secret"
+            cleaned = await client.delete(f"/__breakmybot__/memory/sessions/{session}",
+                headers={"Authorization": f"Bearer {TOKEN}"})
+            assert cleaned.json()["cleaned_up"] is True
+            assert state["policy"] == "current policy"
+
+    import asyncio
+    asyncio.run(exercise())
+
+
+def test_memory_restore_failure_is_unscored_and_kept_for_retry():
+    app = FastAPI()
+    state = {"fact": "original"}
+    failures = [True]
+
+    def restore(_scope, previous):
+        state.clear()
+        state.update(previous)
+        if failures:
+            failures.pop()
+            raise RuntimeError("simulated restore acknowledgement failure")
+
+    controller = instrument_memory(app, token=TOKEN, snapshot=lambda _scope: copy.deepcopy(state),
+        seed=lambda _scope, values: state.update(values), restore=restore,
+        categories=["outdated_knowledge"], enabled=True)
+    assert controller is not None
+
+    async def exercise():
+        async with httpx.AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            headers = {"Authorization": f"Bearer {TOKEN}"}
+            session = "c" * 32
+            await client.put(f"/__breakmybot__/memory/sessions/{session}", headers=headers,
+                json={"scope": {"user": "test"}, "seed": {"fact": "test value"}})
+            first = await client.delete(f"/__breakmybot__/memory/sessions/{session}", headers=headers)
+            assert first.status_code == 500
+            assert session in controller._sessions
+            second = await client.delete(f"/__breakmybot__/memory/sessions/{session}", headers=headers)
+            assert second.status_code == 200 and second.json()["cleaned_up"] is True
+            assert state["fact"] == "original"
+
+    import asyncio
+    asyncio.run(exercise())
+
+
+@pytest.mark.asyncio
+async def test_runner_seeds_real_memory_checks_target_and_restores(monkeypatch):
+    app = FastAPI()
+    state = {"policy": "current-policy"}
+
+    @app.post("/chat")
+    async def chat():
+        return {"answer": state["policy"]}
+
+    instrument_memory(app, token=TOKEN, snapshot=lambda _scope: copy.deepcopy(state),
+        seed=lambda _scope, values: state.update(values),
+        restore=lambda _scope, old: (state.clear(), state.update(old)),
+        categories=tuple(MEMORY_CATEGORIES), enabled=True)
+
+    real_async_client = httpx.AsyncClient
+    monkeypatch.setattr(runner.httpx, "AsyncClient", lambda **kwargs: real_async_client(
+        transport=ASGITransport(app=app), **kwargs))
+
+    async def invoke(_url, path, method, payload, _timeout, **kwargs):
+        async with real_async_client(transport=ASGITransport(app=app),
+                base_url="http://localhost:8000") as target:
+            response = await target.request(method, path, json=payload, headers=kwargs.get("headers"))
+        return response.status_code, response.text, 1.0, response.headers.get("content-type", "")
+
+    monkeypatch.setattr(runner, "invoke", invoke)
+    monkeypatch.setenv("BREAKMYBOT_MEMORY_TEST_TOKEN", TOKEN)
+    request = RunRequest(target_url="http://localhost:8000", endpoint_path="/chat", method="POST",
+        allow_repeated_post=True, instrumented_memory_assessment={"auth_env": "BREAKMYBOT_MEMORY_TEST_TOKEN",
+            "scenarios": [{"id": "old-policy", "name": "Old policy", "category": "outdated_knowledge",
+                "endpoint_path": "/chat", "scope": {"user": "demo"},
+                "seed": {"policy": "known-stale-secret"}, "expected_literals": ["current-policy"],
+                "forbidden_literals": ["known-stale-secret"]}]}, execute_memory_scenarios=True)
+
+    results = await runner._run_memory_scenarios(request, 3, None, None)
+    assert results[0].status == "VERIFIED_FAILURE"
+    assert results[0].evidence["cleanup_succeeded"] is True
+    assert "known-stale-secret" not in json.dumps(results[0].evidence)
+    assert state["policy"] == "current-policy"
+    assert len(results) == len(MEMORY_CATEGORIES)
+    assert all(result.status == "UNSUPPORTED" for result in results[1:])
+
+
+@pytest.mark.asyncio
+async def test_full_runner_persists_verified_memory_finding_and_restored_state(tmp_path, monkeypatch):
+    app = FastAPI()
+    state = {"policy": "14 days"}
+
+    @app.post("/chat")
+    async def chat():
+        return {"answer": state["policy"]}
+
+    instrument_memory(app, token=TOKEN, snapshot=lambda _scope: copy.deepcopy(state),
+        seed=lambda _scope, values: state.update(values),
+        restore=lambda _scope, old: (state.clear(), state.update(old)),
+        categories=("outdated_knowledge",), enabled=True)
+    real_async_client = httpx.AsyncClient
+    monkeypatch.setattr(runner.httpx, "AsyncClient", lambda **kwargs: real_async_client(
+        transport=ASGITransport(app=app), **kwargs))
+
+    async def invoke(_url, path, method, payload, _timeout, **kwargs):
+        async with real_async_client(transport=ASGITransport(app=app),
+                base_url="http://127.0.0.1:8000") as target:
+            response = await target.request(method, path, json=payload, headers=kwargs.get("headers"))
+        return response.status_code, response.text, 1.0, response.headers.get("content-type", "")
+
+    monkeypatch.setattr(runner, "invoke", invoke)
+    monkeypatch.setenv("BREAKMYBOT_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("BREAKMYBOT_MEMORY_TEST_TOKEN", TOKEN)
+    run = RunRecord(target_url="http://127.0.0.1:8000", endpoint_path="/chat", method="POST",
+        profile="quick")
+    store.save(run)
+    request = RunRequest(target_url="http://127.0.0.1:8000", endpoint_path="/chat", method="POST",
+        profile="quick", expected_substring="14 days", allow_repeated_post=True,
+        instrumented_memory_assessment={"auth_env": "BREAKMYBOT_MEMORY_TEST_TOKEN", "scenarios": [{
+            "id": "stale-policy", "name": "Reject stale policy", "category": "outdated_knowledge",
+            "endpoint_path": "/chat", "scope": {"user": "isolated-test"},
+            "seed": {"policy": "30 days"}, "expected_literals": ["14 days"],
+            "forbidden_literals": ["30 days"]}]}, execute_memory_scenarios=True)
+
+    completed = await runner.execute(run.id, request)
+    persisted = store.get(run.id)
+    finding = next(item for item in completed.scenarios if item.scenario_id == "memory-stale-policy")
+    assert completed.status == "COMPLETED"
+    assert finding.status == "VERIFIED_FAILURE"
+    assert finding.evidence["cleanup_succeeded"] is True
+    assert state["policy"] == "14 days"
+    assert persisted is not None
+    assert Path(persisted.report_paths["json"]).is_file()
+    report = Path(persisted.report_paths["json"]).read_text(encoding="utf-8")
+    assert '"status": "VERIFIED_FAILURE"' in report
+    assert "30 days" not in report
+
+
+@pytest.mark.asyncio
+async def test_runner_reports_each_memory_category_not_tested_without_adapter(monkeypatch):
+    app = FastAPI()
+    real_async_client = httpx.AsyncClient
+    monkeypatch.setattr(runner.httpx, "AsyncClient", lambda **kwargs: real_async_client(
+        transport=ASGITransport(app=app), **kwargs))
+    monkeypatch.setenv("BREAKMYBOT_MEMORY_TEST_TOKEN", TOKEN)
+    request = RunRequest(target_url="http://localhost:8000", endpoint_path="/chat", method="GET",
+        instrumented_memory_assessment={"auth_env": "BREAKMYBOT_MEMORY_TEST_TOKEN",
+            "scenarios": [{"id": "x", "name": "x", "category": "outdated_knowledge",
+                "endpoint_path": "/chat", "scope": {"user": "demo"}, "seed": {"x": "y"},
+                "expected_literals": ["current"]}]}, execute_memory_scenarios=True)
+
+    results = await runner._run_memory_scenarios(request, 3, None, None)
+    assert len(results) == len(MEMORY_CATEGORIES)
+    assert all(result.status == "UNSUPPORTED" for result in results)
+    assert all("NOT TESTED — memory interface unavailable" in (result.limitation or "")
+        for result in results)
+
+
+def test_memory_scenarios_require_explicit_execution_opt_in():
+    with pytest.raises(ValueError, match="explicit execution consent"):
+        RunRequest(target_url="http://localhost:8000", endpoint_path="/chat", method="GET",
+            instrumented_memory_assessment={"auth_env": "BREAKMYBOT_MEMORY_TEST_TOKEN",
+                "scenarios": [{"id": "x", "name": "x", "category": "memory_poisoning",
+                    "endpoint_path": "/chat", "scope": {"user": "demo"}, "seed": {"x": "y"},
+                    "expected_literals": ["safe"]}]})
+
+    with pytest.raises(ValueError, match="repeated-call authorization"):
+        RunRequest(target_url="http://localhost:8000", endpoint_path="/chat", method="POST",
+            instrumented_memory_assessment={"auth_env": "BREAKMYBOT_MEMORY_TEST_TOKEN",
+                "scenarios": [{"id": "x", "name": "x", "category": "memory_poisoning",
+                    "endpoint_path": "/chat", "scope": {"user": "demo"}, "seed": {"x": "y"},
+                    "expected_literals": ["safe"]}]}, execute_memory_scenarios=True)
+
+
+def test_memory_assessment_model_validates_categories_and_path_origin():
+    with pytest.raises(ValueError):
+        InstrumentedMemoryAssessment(auth_env="BREAKMYBOT_MEMORY_TEST_TOKEN", scenarios=[{
+            "id": "bad", "name": "bad", "category": "unknown", "endpoint_path": "//evil.example/chat",
+            "scope": {"user": "demo"}, "seed": {}, "expected_literals": ["ok"]}])
+
+
+def test_cross_context_memory_cases_require_multiple_observed_calls():
+    case = {"id": "cross", "name": "Cross-session", "category": "cross_session_consistency",
+        "endpoint_path": "/chat", "scope": {"tenant": "test"}, "seed": {"fact": "answer"},
+        "expected_literals": ["answer"]}
+    with pytest.raises(ValueError, match="at least two invocation steps"):
+        InstrumentedMemoryAssessment(auth_env="BREAKMYBOT_MEMORY_TEST_TOKEN", scenarios=[case])
+    case["invocations"] = [
+        {"endpoint_path": "/chat", "payload": {"session": "a"}, "expected_literals": ["answer"]},
+        {"endpoint_path": "/chat", "payload": {"session": "b"}, "expected_literals": ["answer"]},
+    ]
+    validated = InstrumentedMemoryAssessment(auth_env="BREAKMYBOT_MEMORY_TEST_TOKEN", scenarios=[case])
+    assert len(validated.scenarios[0].invocations) == 2
+
+
+def test_bundled_demo_memory_scenario_matches_cli_contract():
+    path = Path(__file__).resolve().parents[1] / "examples" / "demo-agent" / "memory-scenarios.json"
+    cases = json.loads(path.read_text(encoding="utf-8"))
+    validated = InstrumentedMemoryAssessment(auth_env="BREAKMYBOT_MEMORY_TOKEN", scenarios=cases)
+    assert validated.scenarios[0].category == "outdated_knowledge"

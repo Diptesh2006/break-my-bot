@@ -46,6 +46,20 @@ def test_sqlite_job_queue_persists_claim_cancellation_and_suppresses_stale_repla
     assert store.get(run.id).status == "FAILED"
     assert "replay was suppressed" in store.get(run.id).error
     assert store.claim_job() is None
+    with store.connect() as db:
+        assert db.execute("SELECT request FROM jobs WHERE run_id=?", (run.id,)).fetchone()[0] == "{}"
+
+
+def test_cancelled_queued_job_discards_unexecuted_request_payload(tmp_path, monkeypatch):
+    monkeypatch.setenv("BREAKMYBOT_DATA_DIR", str(tmp_path))
+    run = RunRecord(target_url="http://localhost:8000", endpoint_path="/chat", method="GET", profile="quick")
+    store.save(run)
+    store.enqueue(run.id, {"private_seed": "memory fixture content"})
+
+    assert store.cancel_job(run.id)
+    with store.connect() as db:
+        assert db.execute("SELECT request,status FROM jobs WHERE run_id=?", (run.id,)).fetchone() == (
+            "{}", "CANCELLED")
 
 
 def test_project_and_run_association_survive_sqlite_restart(tmp_path, monkeypatch):
@@ -216,6 +230,7 @@ async def test_worker_processes_and_acknowledges_a_queued_run(tmp_path, monkeypa
     assert await worker.process_one_job() is False
     with store.connect() as db:
         assert db.execute("SELECT status FROM jobs WHERE run_id=?", (run.id,)).fetchone()[0] == "DONE"
+        assert db.execute("SELECT request FROM jobs WHERE run_id=?", (run.id,)).fetchone()[0] == "{}"
 
 
 def test_payload_redaction_hides_credentials_recursively():
@@ -804,7 +819,12 @@ async def test_runner_executes_and_persists_observed_scenarios(tmp_path: Path, m
     assert result.scoring["overall_score"] is None
     assert result.scoring["observed_weight_percent"] == 45
     assert result.scoring["category_scores"]["Output correctness"]["score"] == 100
-    assert persisted is not None and len(persisted.scenarios) == 15
+    assert persisted is not None and len(persisted.scenarios) == 19
+    memory_unavailable = [item for item in persisted.scenarios
+        if item.scenario_id.startswith("unsupported-memory-")]
+    assert len(memory_unavailable) == 6
+    assert all(item.status == "UNSUPPORTED" and "NOT TESTED — memory interface unavailable" in item.limitation
+        for item in memory_unavailable)
     assert "test-secret" not in str(persisted.scenarios)
     assert all(Path(path).is_file() for path in persisted.report_paths.values())
     events = [event for _, event in store.events_after(run.id, 0)]

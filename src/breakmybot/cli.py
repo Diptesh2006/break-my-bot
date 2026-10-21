@@ -7,6 +7,7 @@ from pathlib import Path
 
 import httpx
 import typer
+from pydantic import ValidationError
 from rich.console import Console
 from rich.prompt import Confirm, Prompt
 from rich.table import Table
@@ -62,6 +63,8 @@ def test(
     memory_cases: Path | None = typer.Option(None, "--memory-cases", help="JSON array of approved MemoryScope reference cases"),
     memory_agent_path: str | None = typer.Option(None, "--memory-agent-path", help="SSE chat path on the same target origin"),
     memory_auth_env: str | None = typer.Option(None, "--memory-auth-env", help="MemoryScope agent auth environment variable name"),
+    memory_scenarios: Path | None = typer.Option(None, "--memory-scenarios", help="JSON scenarios for the target's opt-in real-memory adapter"),
+    memory_control_auth_env: str = typer.Option("BREAKMYBOT_MEMORY_TOKEN", "--memory-control-auth-env", help="Environment variable containing the target memory-control token"),
     instrumented_faults: Path | None = typer.Option(None, "--instrumented-faults", help="JSON file of opt-in tool fault scenarios"),
     instrumentation_auth_env: str = typer.Option("BREAKMYBOT_INSTRUMENTATION_TOKEN", "--instrumentation-auth-env", help="Environment variable containing the target instrumentation control token"),
     plan_with_nrouter: bool = typer.Option(False, "--plan-with-nrouter", help="Opt in to send endpoint metadata to the configured nRouter planner"),
@@ -168,6 +171,23 @@ def test(
         consent = Confirm.ask("MemoryScope will send these references and the target answers to the configured nRouter judge. Consent?", default=False)
         memory_assessment = {"agent_path": memory_agent_path or endpoint, "cases": cases,
             "send_to_nrouter": consent, "auth_env": memory_auth_env}
+    instrumented_memory_assessment = None
+    execute_memory_scenarios = False
+    if memory_scenarios:
+        if method != "GET" and not allow_repeated_post:
+            raise typer.BadParameter("memory scenarios add target calls; use --allow-repeated-post and confirm safety")
+        try:
+            scenario_cases = json.loads(memory_scenarios.read_text(encoding="utf-8"))
+            if not isinstance(scenario_cases, list):
+                raise ValueError("expected an array")
+            from .models import InstrumentedMemoryAssessment
+            validated = InstrumentedMemoryAssessment(auth_env=memory_control_auth_env,
+                scenarios=scenario_cases)
+        except (OSError, json.JSONDecodeError, ValueError, ValidationError) as exc:
+            raise typer.BadParameter("memory-scenarios must be a valid array matching the documented contract") from exc
+        if Confirm.ask("Seed the target's real memory for these approved scenarios and attempt restoration after each test? The target may have side effects.", default=False):
+            instrumented_memory_assessment = validated.model_dump(mode="json")
+            execute_memory_scenarios = True
     if plan_with_nrouter and not Confirm.ask(
         "Send target name, endpoint/method and payload field names to nRouter for scenario planning? "
         "When generated execution is enabled, the approved tool/fault pairs and response oracles are also sent.",
@@ -191,6 +211,8 @@ def test(
         "method": method, "payload": payload, "profile": profile, "application_name": discovered.get("application_name"),
         "expected_substring": expected, "allow_repeated_post": allow_repeated_post, "auth_env": auth_env,
         "memory_assessment": memory_assessment, "instrumented_assessment": instrumented_assessment,
+        "instrumented_memory_assessment": instrumented_memory_assessment,
+        "execute_memory_scenarios": execute_memory_scenarios,
         "use_nrouter_planner": plan_with_nrouter,
         "execute_planned_scenarios": execute_planned_scenarios,
         "max_planned_scenarios": max_planned_scenarios})

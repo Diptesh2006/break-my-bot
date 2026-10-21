@@ -1,4 +1,4 @@
-"""SQLite-leased background worker for durable local assessment execution."""
+"""Database-leased background worker for durable local assessment execution."""
 
 from __future__ import annotations
 

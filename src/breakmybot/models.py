@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from datetime import datetime, timezone
 from typing import Any, Literal
 from uuid import uuid4
@@ -64,6 +65,84 @@ class InstrumentedAssessment(BaseModel):
         return self
 
 
+MemoryTestCategory = Literal[
+    "outdated_knowledge", "contradictory_information", "cross_session_consistency",
+    "cross_agent_memory", "access_boundaries", "memory_poisoning",
+]
+
+
+class MemoryInvocation(BaseModel):
+    endpoint_path: str = Field(min_length=1, max_length=2000)
+    payload: dict[str, Any] = Field(default_factory=dict)
+    expected_literals: list[str] = Field(min_length=1, max_length=20)
+    forbidden_literals: list[str] = Field(default_factory=list, max_length=20)
+    auth_env: str | None = Field(default=None, pattern=r"^BREAKMYBOT_CASE_[A-Z0-9_]+$")
+    auth_header: str = Field(default="Authorization", pattern=r"^[A-Za-z0-9-]{1,64}$")
+    auth_scheme: str = Field(default="Bearer", max_length=24, pattern=r"^[A-Za-z0-9_-]*$")
+
+    @field_validator("endpoint_path")
+    @classmethod
+    def path_only(cls, value: str) -> str:
+        if not value.startswith("/") or value.startswith("//") or "?" in value or "#" in value:
+            raise ValueError("memory invocation endpoint_path must be a path on the selected target origin")
+        return value
+
+    @field_validator("expected_literals", "forbidden_literals")
+    @classmethod
+    def nonempty_literals(cls, values: list[str]) -> list[str]:
+        if any(not value or not value.strip() or len(value) > 1000 for value in values):
+            raise ValueError("memory invariants must be non-empty literals of at most 1000 characters")
+        return values
+
+
+class InstrumentedMemoryScenario(BaseModel):
+    id: str = Field(pattern=r"^[a-zA-Z0-9][a-zA-Z0-9_-]{0,63}$")
+    name: str = Field(min_length=1, max_length=120)
+    category: MemoryTestCategory
+    endpoint_path: str = Field(min_length=1, max_length=2000)
+    payload: dict[str, Any] = Field(default_factory=dict)
+    scope: dict[str, str] = Field(min_length=1, max_length=10)
+    seed: dict[str, Any]
+    expected_literals: list[str] = Field(min_length=1, max_length=20)
+    forbidden_literals: list[str] = Field(default_factory=list, max_length=20)
+    invocations: list[MemoryInvocation] = Field(default_factory=list, max_length=5)
+
+    @field_validator("expected_literals", "forbidden_literals")
+    @classmethod
+    def nonempty_literals(cls, values: list[str]) -> list[str]:
+        if any(not value or not value.strip() or len(value) > 1000 for value in values):
+            raise ValueError("memory invariants must be non-empty literals of at most 1000 characters")
+        return values
+
+    @model_validator(mode="after")
+    def require_sequence_for_cross_context_checks(self):
+        if self.category in {"cross_session_consistency", "cross_agent_memory"} and len(self.invocations) < 2:
+            raise ValueError("cross-session and cross-agent scenarios require at least two invocation steps")
+        return self
+
+    @field_validator("endpoint_path")
+    @classmethod
+    def path_only(cls, value: str) -> str:
+        if not value.startswith("/") or value.startswith("//") or "?" in value or "#" in value:
+            raise ValueError("memory scenario endpoint_path must be a path on the selected target origin")
+        return value
+
+
+class InstrumentedMemoryAssessment(BaseModel):
+    auth_env: str = Field(pattern=r"^BREAKMYBOT_MEMORY_[A-Z0-9_]+$")
+    scenarios: list[InstrumentedMemoryScenario] = Field(min_length=1, max_length=20)
+
+    @model_validator(mode="after")
+    def validate_unique_cases_and_seed_size(self):
+        ids = [scenario.id for scenario in self.scenarios]
+        if len(ids) != len(set(ids)):
+            raise ValueError("memory scenario identifiers must be unique")
+        if any(len(json.dumps(scenario.seed, ensure_ascii=False).encode("utf-8")) > 16384
+               for scenario in self.scenarios):
+            raise ValueError("each memory seed must be at most 16 KiB")
+        return self
+
+
 class DiscoveryResult(BaseModel):
     target_url: str
     reachable: bool
@@ -87,6 +166,8 @@ class RunRequest(BaseModel):
     auth_header: str = Field(default="Authorization", pattern=r"^[A-Za-z0-9-]{1,64}$")
     auth_scheme: str = Field(default="Bearer", max_length=24, pattern=r"^[A-Za-z0-9_-]*$")
     memory_assessment: "MemoryAssessment | None" = None
+    instrumented_memory_assessment: InstrumentedMemoryAssessment | None = None
+    execute_memory_scenarios: bool = False
     instrumented_assessment: InstrumentedAssessment | None = None
     use_nrouter_planner: bool = False
     execute_planned_scenarios: bool = False
@@ -98,6 +179,12 @@ class RunRequest(BaseModel):
 
     @model_validator(mode="after")
     def validate_planned_execution_opt_in(self):
+        if self.instrumented_memory_assessment is not None and not self.execute_memory_scenarios:
+            raise ValueError("instrumented memory scenarios require explicit execution consent")
+        if self.execute_memory_scenarios and self.instrumented_memory_assessment is None:
+            raise ValueError("memory scenario execution requires an operator-supplied scenario file")
+        if self.execute_memory_scenarios and self.method != "GET" and not self.allow_repeated_post:
+            raise ValueError("memory scenario execution requires explicit repeated-call authorization")
         if self.execute_planned_scenarios:
             if not self.use_nrouter_planner:
                 raise ValueError("planned scenario execution requires the nRouter planner")

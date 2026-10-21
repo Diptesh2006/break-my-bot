@@ -10,8 +10,9 @@ from uuid import uuid4
 import httpx
 from urllib.parse import urlsplit, urlunsplit
 
-from . import instrumentation, memoryscope, planner, reports, scoring, store
-from .models import InstrumentedAssessment, InstrumentedFaultChain, InstrumentedToolFault
+from . import instrumentation, memory_adapter, memoryscope, planner, reports, scoring, store
+from .models import (InstrumentedAssessment, InstrumentedFaultChain, InstrumentedToolFault,
+                     MemoryInvocation)
 from .models import RunRecord, RunRequest, ScenarioResult
 from .redaction import redact_text
 from .target import docker_resolve_url, invoke, validate_target
@@ -25,7 +26,7 @@ def _scenario_event(run_id: str, result: ScenarioResult, completed: int) -> None
     allowed = {"response_excerpt", "content_type", "assertion_passed", "fault_injected",
         "injection_events", "cleanup_succeeded", "http_status", "invocation_error",
         "expected_substring_passed", "threshold_ms", "timeout_ms", "error_type",
-        "contract", "body_nonempty", "parse_passed"}
+        "contract", "body_nonempty", "parse_passed", "steps", "assertions"}
     store.append_event(run_id, {"type": "scenario.completed", "scenario_id": result.scenario_id,
         "name": result.name, "category": result.category, "status": result.status,
         "severity": result.severity, "http_status": result.http_status,
@@ -208,6 +209,204 @@ async def _run_planned_scenarios(run: RunRecord, request: RunRequest, timeout: f
     return results
 
 
+async def _run_memory_scenarios(request: RunRequest, timeout: float,
+                                headers: dict[str, str] | None,
+                                cancel: asyncio.Event | None) -> list[ScenarioResult]:
+    config = request.instrumented_memory_assessment
+    if config is None:
+        return []
+    categories = {
+        "outdated_knowledge", "contradictory_information", "cross_session_consistency",
+        "cross_agent_memory", "access_boundaries", "memory_poisoning",
+    }
+    category_names = {
+        "outdated_knowledge": "Outdated memory",
+        "contradictory_information": "Contradictory memory",
+        "cross_session_consistency": "Cross-session consistency",
+        "cross_agent_memory": "Cross-agent memory",
+        "access_boundaries": "Memory access boundaries",
+        "memory_poisoning": "Memory poisoning",
+    }
+
+    def score_category(category: str) -> str:
+        return "Security" if category == "access_boundaries" else "Memory integrity"
+
+    def memory_secrets(scenario) -> tuple[str, ...]:
+        found: set[str] = set()
+
+        def visit(value):
+            if isinstance(value, dict):
+                for child in value.values():
+                    visit(child)
+            elif isinstance(value, list):
+                for child in value:
+                    visit(child)
+            elif isinstance(value, str) and len(value) >= 4:
+                found.add(value)
+
+        visit(scenario.seed)
+        visit(scenario.scope)
+        return tuple(found)
+    memory_token = os.getenv(config.auth_env)
+    if not memory_token:
+        return [ScenarioResult(scenario_id="memory-instrumentation-credentials",
+            name="Instrumented memory credentials", category="Memory integrity", status="SETUP_ERROR",
+            limitation=f"Configured memory instrumentation credential {config.auth_env} is missing.")]
+    if request.method != "GET" and not request.allow_repeated_post:
+        return [ScenarioResult(scenario_id="memory-repeat-safety", name="Memory scenario invocation safety",
+            category="Memory integrity", status="UNSUPPORTED",
+            limitation="Memory scenarios add target calls; authorize repeated non-GET calls explicitly.")]
+    parsed = urlsplit(str(request.target_url))
+    origin = urlunsplit((parsed.scheme, parsed.netloc, "", "", ""))
+    control_url = origin + memory_adapter.MEMORY_CONTROL_PREFIX
+    try:
+        target_host = parsed.hostname or ""
+        loopback = target_host.casefold() in {"localhost", "ip6-localhost"} or ipaddress.ip_address(target_host).is_loopback
+    except ValueError:
+        loopback = False
+    if parsed.scheme != "https" and not loopback:
+        return [ScenarioResult(scenario_id="memory-instrumentation-transport",
+            name="Memory instrumentation transport", category="Memory integrity", status="SETUP_ERROR",
+            limitation="Memory instrumentation bearer credentials require HTTPS for non-loopback targets.")]
+    if os.getenv("BREAKMYBOT_DOCKER_MODE", "false").lower() == "true":
+        control_url = docker_resolve_url(control_url)
+    try:
+        validate_target(control_url)
+    except ValueError:
+        return [ScenarioResult(scenario_id="memory-instrumentation-target-policy",
+            name="Memory instrumentation target policy", category="Memory integrity", status="SETUP_ERROR",
+            limitation="The target memory control endpoint is not permitted by the configured target policy.")]
+
+    auth = {"Authorization": f"Bearer {memory_token}"}
+    available: set[str] = set()
+    results: list[ScenarioResult] = []
+    try:
+        async with httpx.AsyncClient(timeout=timeout, follow_redirects=False, trust_env=False) as client:
+            manifest_response = await client.get(control_url + "/capabilities")
+            manifest_response.raise_for_status()
+            manifest = manifest_response.json()
+            if not isinstance(manifest, dict):
+                raise ValueError("Target memory capability manifest must be an object")
+            raw_categories = manifest.get("categories")
+            if manifest.get("contract") == memory_adapter.MEMORY_CONTRACT and manifest.get("snapshot_seed_restore") is True and isinstance(raw_categories, list):
+                available = categories.intersection(item for item in raw_categories if isinstance(item, str))
+
+            seen: set[str] = set()
+            for scenario in config.scenarios:
+                seen.add(scenario.category)
+                if cancel and cancel.is_set():
+                    results.append(ScenarioResult(scenario_id=f"memory-{scenario.id}",
+                        name=scenario.name, category="Memory integrity", status="SKIPPED",
+                        limitation="Memory test cancelled before execution."))
+                    continue
+                if scenario.category not in available:
+                    results.append(ScenarioResult(scenario_id=f"memory-{scenario.id}",
+                        name=scenario.name, category=score_category(scenario.category), status="UNSUPPORTED",
+                        limitation="NOT TESTED — target memory interface unavailable for this category."))
+                    continue
+                session_id = uuid4().hex
+                started = asyncio.get_running_loop().time()
+                seeded = False
+                arm_attempted = False
+                cleanup_ok = False
+                state = "PASSED"
+                status_code = None
+                step_evidence: list[dict] = []
+                try:
+                    arm_attempted = True
+                    response = await client.put(f"{control_url}/sessions/{session_id}", headers=auth,
+                        json={"scope": scenario.scope, "seed": scenario.seed})
+                    response.raise_for_status()
+                    seed_receipt = response.json()
+                    if not isinstance(seed_receipt, dict):
+                        raise ValueError("Target memory seed receipt must be an object")
+                    seeded = seed_receipt.get("seeded") is True
+                    if not seeded:
+                        raise ValueError("Target did not confirm the memory seed")
+                    steps = scenario.invocations or [MemoryInvocation(
+                        endpoint_path=scenario.endpoint_path, payload=scenario.payload,
+                        expected_literals=scenario.expected_literals,
+                        forbidden_literals=scenario.forbidden_literals)]
+                    for index, step in enumerate(steps, 1):
+                        if cancel and cancel.is_set():
+                            state = "SKIPPED"
+                            break
+                        step_headers = dict(headers or {})
+                        extra_secrets = [memory_token]
+                        if request.auth_env and os.getenv(request.auth_env):
+                            extra_secrets.append(os.getenv(request.auth_env))
+                        if step.auth_env:
+                            case_token = os.getenv(step.auth_env)
+                            if not case_token:
+                                raise ValueError(f"Configured memory case credential {step.auth_env} is missing")
+                            step_headers[step.auth_header] = f"{step.auth_scheme} {case_token}".strip()
+                            extra_secrets.append(case_token)
+                        status_code, body, duration, _content_type = await invoke(
+                            str(request.target_url), step.endpoint_path, request.method, step.payload,
+                            timeout, docker_mode=os.getenv("BREAKMYBOT_DOCKER_MODE", "false").lower() == "true",
+                            headers=step_headers or None)
+                        folded = body.casefold()
+                        assertions = {
+                            **{f"expected_literal_{number}": literal.casefold() in folded
+                               for number, literal in enumerate(step.expected_literals, 1)},
+                            **{f"forbidden_literal_{number}": literal.casefold() not in folded
+                               for number, literal in enumerate(step.forbidden_literals, 1)},
+                        }
+                        passed = 200 <= status_code < 300 and all(assertions.values())
+                        if not passed:
+                            state = "VERIFIED_FAILURE"
+                        sanitized = redact_text(body, step.payload,
+                            tuple(extra_secrets) + memory_secrets(scenario))[:1200]
+                        step_evidence.append({"step": index, "http_status": status_code,
+                            "duration_ms": round(duration, 2), "assertions": assertions,
+                            "response_excerpt": sanitized})
+                except (httpx.HTTPError, ValueError, TypeError):
+                    state = "SETUP_ERROR"
+                finally:
+                    if arm_attempted:
+                        try:
+                            cleanup = await client.delete(f"{control_url}/sessions/{session_id}", headers=auth)
+                            cleanup_receipt = cleanup.json() if cleanup.is_success else {}
+                            cleanup_ok = (cleanup.is_success and isinstance(cleanup_receipt, dict)
+                                and cleanup_receipt.get("cleaned_up") is True)
+                        except (httpx.HTTPError, ValueError, TypeError, AttributeError):
+                            cleanup_ok = False
+                if not cleanup_ok:
+                    state = "SETUP_ERROR"
+                evidence = {"steps": step_evidence, "cleanup_succeeded": cleanup_ok}
+                if status_code is not None:
+                    evidence["http_status"] = status_code
+                results.append(ScenarioResult(scenario_id=f"memory-{scenario.id}",
+                    name=scenario.name, category=score_category(scenario.category), status=state,
+                    severity="high" if state == "VERIFIED_FAILURE" else "info",
+                    duration_ms=round((asyncio.get_running_loop().time() - started) * 1000, 2),
+                    http_status=status_code, evidence=evidence,
+                    limitation=(None if state not in {"SETUP_ERROR", "SKIPPED"} else
+                        "Target memory restoration was not confirmed; result excluded from scoring."
+                        if not cleanup_ok else
+                        "Memory test did not complete; no result was scored." if state == "SETUP_ERROR" else
+                        "Memory test was cancelled after cleanup.")))
+    except httpx.HTTPStatusError as exc:
+        if exc.response.status_code == 404:
+            return [ScenarioResult(scenario_id=f"memory-unavailable-{category}",
+                name=category_names[category], category=score_category(category), status="UNSUPPORTED",
+                limitation="NOT TESTED — memory interface unavailable.") for category in sorted(categories)]
+        return [ScenarioResult(scenario_id="memory-interface", name="Target memory interface",
+            category="Memory integrity", status="SETUP_ERROR",
+            limitation="The target memory adapter returned an unsuccessful control response.")]
+    except (httpx.HTTPError, ValueError, TypeError, KeyError, AttributeError):
+        return [ScenarioResult(scenario_id="memory-interface", name="Target memory interface",
+            category="Memory integrity", status="SETUP_ERROR",
+            limitation="The target did not provide the supported memory adapter contract.")]
+
+    for category in sorted(categories - seen):
+        status = "UNSUPPORTED"
+        results.append(ScenarioResult(scenario_id=f"memory-unconfigured-{category}",
+            name=category_names[category], category=score_category(category), status=status,
+            limitation="NOT TESTED — no operator-supplied scenario for this memory category."))
+    return results
+
+
 def _contains_ordered_faults(observed: list[dict], expected: list[dict]) -> bool:
     cursor = 0
     for event in observed:
@@ -351,14 +550,29 @@ async def execute(run_id: str, request: RunRequest, cancel: asyncio.Event | None
                 _scenario_event(run.id, run.scenarios[-1], len(run.scenarios))
                 run.status = "PARTIAL"
                 break
-        unsupported = [("Memory lifecycle and access tests", "Memory integrity"),
-                       ("Security boundary invariants", "Security")]
+        memory_categories = {item.category for item in request.instrumented_memory_assessment.scenarios} \
+            if request.instrumented_memory_assessment else set()
+        unsupported = [] if request.instrumented_memory_assessment is None or "access_boundaries" in memory_categories else [
+            ("Security boundary invariants", "Security")]
         if request.instrumented_assessment is None:
             unsupported.insert(0, ("Internal tool fault injection", "Tool reliability"))
         for name, category in unsupported:
             run.scenarios.append(ScenarioResult(scenario_id=f"unsupported-{category.lower().replace(' ', '-')}",
                 name=name, category=category, status="UNSUPPORTED",
                 limitation="Black-box endpoint does not expose the required instrumentation or explicit test fixtures."))
+        if request.instrumented_memory_assessment is None:
+            memory_categories = {
+                "outdated_knowledge": "Outdated memory",
+                "contradictory_information": "Contradictory memory",
+                "cross_session_consistency": "Cross-session consistency",
+                "cross_agent_memory": "Cross-agent memory",
+                "access_boundaries": "Memory access boundaries",
+                "memory_poisoning": "Memory poisoning",
+            }
+            for category_key, name in memory_categories.items():
+                run.scenarios.append(ScenarioResult(scenario_id=f"unsupported-memory-{category_key}",
+                    name=name, category="Security" if category_key == "access_boundaries" else "Memory integrity",
+                    status="UNSUPPORTED", limitation="NOT TESTED — memory interface unavailable."))
         if request.instrumented_assessment is not None:
             if run.status == "PARTIAL":
                 run.scenarios.append(ScenarioResult(scenario_id="instrumentation-baseline-failed",
@@ -381,6 +595,18 @@ async def execute(run_id: str, request: RunRequest, cancel: asyncio.Event | None
             run.scenarios.append(ScenarioResult(scenario_id="unsupported-output-oracle", name="Semantic output correctness",
                 category="Output correctness", status="UNSUPPORTED",
                 limitation="No verified expected answer or grounded reference cases were supplied."))
+        if request.instrumented_memory_assessment is not None:
+            _phase(run.id, "INSTRUMENTED_MEMORY")
+            if run.status == "PARTIAL":
+                run.scenarios.extend([ScenarioResult(scenario_id=f"memory-{case.id}",
+                    name=case.name, category="Memory integrity", status="SETUP_ERROR",
+                    limitation="Memory scenario not started because the baseline invocation failed.")
+                    for case in request.instrumented_memory_assessment.scenarios])
+            else:
+                memory_results = await _run_memory_scenarios(request, timeout, headers, cancel)
+                run.scenarios.extend(memory_results)
+                for result in memory_results:
+                    _scenario_event(run.id, result, len(run.scenarios))
         if cancel and cancel.is_set():
             run.status = "CANCELLED"
         _phase(run.id, "SCORING")

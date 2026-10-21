@@ -183,7 +183,7 @@ def claim_job(lease_seconds: int = 900) -> tuple[str, dict] | None:
 
 def acknowledge_job(run_id: str) -> None:
     with connect() as db:
-        db.execute("UPDATE jobs SET status='DONE',lease_until=NULL WHERE run_id=?", (run_id,))
+        db.execute("UPDATE jobs SET status='DONE',request='{}',lease_until=NULL WHERE run_id=?", (run_id,))
 
 
 def renew_job_lease(run_id: str, lease_seconds: int = 900) -> bool:
@@ -202,7 +202,7 @@ def cancel_job(run_id: str) -> bool:
             return False
         if row[0] == "QUEUED":
             cancelled = "TRUE" if os.getenv("BREAKMYBOT_DATABASE_URL", "").strip() else "1"
-            db.execute(f"UPDATE jobs SET status='CANCELLED',cancel_requested={cancelled} WHERE run_id=?", (run_id,))
+            db.execute(f"UPDATE jobs SET status='CANCELLED',cancel_requested={cancelled},request='{{}}' WHERE run_id=?", (run_id,))
             run_row = db.execute("SELECT payload FROM runs WHERE id=?", (run_id,)).fetchone()
             if run_row:
                 run = RunRecord.model_validate_json(run_row[0])
@@ -243,5 +243,5 @@ def expire_stale_jobs() -> None:
                                (json.dumps(run.model_dump(mode="json"), ensure_ascii=False), run_id))
                     db.execute("INSERT INTO events(run_id,event) VALUES(?,?)",
                                (run_id, json.dumps({"type": "run.failed", "phase": "FAILED", "reason": "worker_lease_expired"})))
-            db.execute("UPDATE jobs SET status='FAILED',lease_until=NULL WHERE run_id=?", (run_id,))
+            db.execute("UPDATE jobs SET status='FAILED',request='{}',lease_until=NULL WHERE run_id=?", (run_id,))
 

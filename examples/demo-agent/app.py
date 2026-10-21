@@ -5,6 +5,7 @@ from fastapi import FastAPI, Request
 from pydantic import BaseModel
 from fastapi.responses import StreamingResponse
 from breakmybot.instrumentation import instrument
+from breakmybot.memory_adapter import instrument_memory
 
 app = FastAPI(title="BreakMyBot Deterministic Demo Agent", version="1.0.0")
 tool_faults = instrument(app, token=os.getenv("BREAKMYBOT_INSTRUMENTATION_TOKEN", ""),
@@ -35,6 +36,28 @@ class RefundRetryRequest(BaseModel):
 CURRENT_REFUND_POLICY = "Customers may request a refund within 14 days of purchase."
 demo_memory = {"refund_policy": CURRENT_REFUND_POLICY}
 fake_refund_service = {"side_effect_count": 0, "operations": {}}
+
+
+def snapshot_demo_memory(_scope):
+    return demo_memory.copy()
+
+
+def seed_demo_memory_state(_scope, seed):
+    if set(seed) != {"refund_policy"} or not isinstance(seed["refund_policy"], str):
+        raise ValueError("demo memory adapter accepts only a refund_policy string")
+    demo_memory["refund_policy"] = seed["refund_policy"]
+
+
+def restore_demo_memory(_scope, snapshot):
+    demo_memory.clear()
+    demo_memory.update(snapshot)
+
+
+memory_controls = instrument_memory(app,
+    token=os.getenv("BREAKMYBOT_MEMORY_TOKEN", ""), snapshot=snapshot_demo_memory,
+    seed=seed_demo_memory_state, restore=restore_demo_memory,
+    categories=("outdated_knowledge",),
+    enabled=os.getenv("BREAKMYBOT_MEMORY_ENABLED", "false").lower() == "true")
 
 
 @app.get("/health")

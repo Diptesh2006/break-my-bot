@@ -50,6 +50,8 @@ def test_postgres_storage_migrations_events_and_concurrent_worker_claims(monkeyp
         assert store.cancel_job(records[2].id)
         assert store.job_cancel_requested(records[2].id)
         assert store.get(records[2].id).status == "CANCELLED"
+        with store.connect() as db:
+            assert db.execute("SELECT request FROM jobs WHERE run_id=?", (records[2].id,)).fetchone()[0] == "{}"
     finally:
         with store.connect() as db:
             for run_id in run_ids:
