@@ -24,7 +24,7 @@ from fastapi.responses import JSONResponse
 import httpx
 from pydantic import BaseModel, Field
 
-FaultKind = Literal["timeout", "exception", "empty_response", "malformed_response", "delay"]
+FaultKind = Literal["timeout", "exception", "empty_response", "malformed_response", "delay", "lost_acknowledgment"]
 CONTROL_PREFIX = "/__breakmybot__"
 INSTRUMENTATION_CONTRACT = "breakmybot-instrumentation-v1"
 
@@ -36,9 +36,10 @@ class ToolFault:
     value: Any = None
     delay_seconds: float = 0
     every_n_calls: int = 1
+    on_call: int | None = None
 
     def __post_init__(self) -> None:
-        if self.kind not in {"timeout", "exception", "empty_response", "malformed_response", "delay"}:
+        if self.kind not in {"timeout", "exception", "empty_response", "malformed_response", "delay", "lost_acknowledgment"}:
             raise ValueError("unsupported tool fault kind")
         if not self.tool.strip():
             raise ValueError("tool name must not be empty")
@@ -46,6 +47,8 @@ class ToolFault:
             raise ValueError("fault delay must be between 0 and 30 seconds")
         if self.every_n_calls < 1:
             raise ValueError("every_n_calls must be positive")
+        if self.on_call is not None and not 1 <= self.on_call <= 100:
+            raise ValueError("on_call must be between 1 and 100")
 
 
 @dataclass
@@ -126,7 +129,7 @@ class ToolFaultController(AbstractAsyncContextManager["ToolFaultController"]):
         counts[tool_name] += 1
         call_number = counts[tool_name]
         fault = next((item for item in faults if item.tool == tool_name and self._matches(item, call_number)), None)
-        if fault is not None:
+        if fault is not None and fault.kind != "lost_acknowledgment":
             events.append({"type": "fault.injected", "tool": tool_name, "kind": fault.kind,
                            "call": call_number, "source": "instrumented_tool"})
             if fault.kind == "timeout":
@@ -152,10 +155,17 @@ class ToolFaultController(AbstractAsyncContextManager["ToolFaultController"]):
                            "error_type": type(exc).__name__})
             raise
         events.append({"type": "tool.completed", "tool": tool_name, "call": call_number})
+        if fault is not None and fault.kind == "lost_acknowledgment":
+            events.append({"type": "fault.injected", "tool": tool_name, "kind": fault.kind,
+                           "call": call_number, "source": "instrumented_tool", "after_tool_completed": True})
+            events.append({"type": "fault.acknowledgment_lost", "tool": tool_name, "call": call_number})
+            raise TimeoutError(f"Injected lost acknowledgment after tool {tool_name} completed")
         return result
 
     @staticmethod
     def _matches(fault: ToolFault, call_number: int) -> bool:
+        if fault.on_call is not None:
+            return call_number == fault.on_call
         return call_number % fault.every_n_calls == 0
 
 
@@ -169,6 +179,7 @@ class _ArmFault(BaseModel):
     kind: FaultKind
     delay_seconds: float = Field(default=0, ge=0, le=30)
     every_n_calls: int = Field(default=1, ge=1, le=100)
+    on_call: int | None = Field(default=None, ge=1, le=100)
 
 
 class _ArmRequest(BaseModel):
@@ -177,6 +188,7 @@ class _ArmRequest(BaseModel):
     kind: FaultKind | None = None
     delay_seconds: float = Field(default=0, ge=0, le=30)
     every_n_calls: int = Field(default=1, ge=1, le=100)
+    on_call: int | None = Field(default=None, ge=1, le=100)
 
     def as_faults(self) -> list[_ArmFault]:
         if self.faults is not None:
@@ -184,7 +196,7 @@ class _ArmRequest(BaseModel):
         if self.tool is None or self.kind is None:
             raise ValueError("provide either a faults array or a single tool and kind")
         return [_ArmFault(tool=self.tool, kind=self.kind, delay_seconds=self.delay_seconds,
-                          every_n_calls=self.every_n_calls)]
+                          every_n_calls=self.every_n_calls, on_call=self.on_call)]
 
 
 def instrument(app: FastAPI, *, token: str, enabled: bool = False) -> ToolFaultController:
@@ -219,7 +231,7 @@ def instrument(app: FastAPI, *, token: str, enabled: bool = False) -> ToolFaultC
         validate_session_id(session_id)
         try:
             controller.arm(session_id, tuple(ToolFault(tool=fault.tool, kind=fault.kind,
-                delay_seconds=fault.delay_seconds, every_n_calls=fault.every_n_calls)
+                delay_seconds=fault.delay_seconds, every_n_calls=fault.every_n_calls, on_call=fault.on_call)
                 for fault in request.as_faults()))
         except ValueError as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc

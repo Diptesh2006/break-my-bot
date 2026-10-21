@@ -348,6 +348,71 @@ async def test_runner_scores_ordered_fault_chain_with_provenance_and_cleanup(tmp
 
 
 @pytest.mark.asyncio
+async def test_lost_acknowledgment_retry_verifies_actual_duplicate_and_idempotent_control(tmp_path, monkeypatch):
+    import importlib.util
+    import sys
+
+    token = "duplicate-action-test-token-1234567890"
+    monkeypatch.setenv("BREAKMYBOT_INSTRUMENTATION_ENABLED", "true")
+    monkeypatch.setenv("BREAKMYBOT_INSTRUMENTATION_TOKEN", token)
+    monkeypatch.setenv("BREAKMYBOT_DOCKER_MODE", "false")
+    monkeypatch.setenv("BREAKMYBOT_DATA_DIR", str(tmp_path))
+    demo_path = Path(__file__).resolve().parents[1] / "examples" / "demo-agent" / "app.py"
+    spec = importlib.util.spec_from_file_location("duplicate_action_demo_agent", demo_path)
+    assert spec and spec.loader
+    demo_agent = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = demo_agent
+    spec.loader.exec_module(demo_agent)
+
+    original_client = httpx.AsyncClient
+
+    def target_client(*args, **kwargs):
+        return original_client(*args, **kwargs, transport=ASGITransport(app=demo_agent.app))
+
+    monkeypatch.setattr("breakmybot.instrumentation.httpx.AsyncClient", target_client)
+
+    async def invoke_demo(url, path, method, payload, _timeout, *, docker_mode=False, headers=None):
+        async with original_client(transport=ASGITransport(app=demo_agent.app), base_url=url) as client:
+            response = await client.request(method, path, json=payload, headers=headers)
+        return response.status_code, response.text, 1.0, response.headers.get("content-type", "")
+
+    monkeypatch.setattr(runner, "invoke", invoke_demo)
+    monkeypatch.setenv("BREAKMYBOT_INSTRUMENTATION_TOKEN", token)
+
+    async def assess(idempotency_key):
+        async with original_client(transport=ASGITransport(app=demo_agent.app),
+                                  base_url="http://127.0.0.1:8001") as client:
+            await client.post("/api/refund/reset")
+        request = RunRequest(target_url="http://127.0.0.1:8001", endpoint_path="/api/refund/retry",
+            method="POST", payload={"idempotency_key": idempotency_key}, profile="quick",
+            allow_repeated_post=True, instrumented_assessment={"auth_env": "BREAKMYBOT_INSTRUMENTATION_TOKEN",
+                "faults": [{"tool": "refund_commit", "kind": "lost_acknowledgment", "on_call": 1,
+                    "expected_substring": "side-effect count 1"}]})
+        run = RunRecord(target_url=str(request.target_url), endpoint_path=request.endpoint_path,
+            method=request.method, profile=request.profile)
+        results = await runner._run_instrumented_scenarios(run, request, 10, None, None)
+        async with original_client(transport=ASGITransport(app=demo_agent.app),
+                                  base_url="http://127.0.0.1:8001") as client:
+            state = (await client.get("/api/refund/state")).json()
+        return results[0], state
+
+    unsafe, unsafe_state = await assess(None)
+    assert unsafe.status == "VERIFIED_FAILURE"
+    assert unsafe.evidence["fault_injected"] is True
+    assert unsafe.evidence["cleanup_succeeded"] is True
+    assert "side-effect count 2" in unsafe.evidence["response_excerpt"]
+    assert unsafe_state["side_effect_count"] == 2
+    assert any(event.get("type") == "fault.acknowledgment_lost" for event in unsafe.evidence["injection_events"])
+
+    safe, safe_state = await assess("breakmybot-test-refund-001")
+    assert safe.status == "PASSED"
+    assert safe.evidence["fault_injected"] is True
+    assert safe.evidence["cleanup_succeeded"] is True
+    assert "side-effect count 1" in safe.evidence["response_excerpt"]
+    assert safe_state["side_effect_count"] == 1
+
+
+@pytest.mark.asyncio
 async def test_instrumented_control_token_requires_https_for_non_loopback_target(monkeypatch):
     monkeypatch.setenv("BREAKMYBOT_INSTRUMENTATION_TOKEN", "x" * 40)
     request = RunRequest(target_url="http://192.0.2.10:8443", endpoint_path="/chat", method="GET",

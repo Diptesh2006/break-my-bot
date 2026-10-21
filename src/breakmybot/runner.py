@@ -116,13 +116,15 @@ async def _run_instrumented_scenarios(run: RunRecord, request: RunRequest, timeo
                 except (httpx.HTTPError, ValueError, TypeError):
                     cleanup_ok = False
             delivered = [event for event in observed_events if event.get("type") == "fault.injected"]
+            provenance = [event for event in observed_events if event.get("type") in
+                {"fault.injected", "fault.acknowledgment_lost"}]
             expected_faults = [{"tool": fault.tool, "kind": fault.kind} for fault in faults]
             observed_faults = [{"tool": event.get("tool"), "kind": event.get("kind")} for event in delivered]
             ordered_injections = _contains_ordered_faults(observed_faults, expected_faults)
             evidence = {"tool": faults[0].tool if len(faults) == 1 else None,
                 "fault_kind": faults[0].kind if len(faults) == 1 else None,
                 "faults": expected_faults, "fault_injected": ordered_injections,
-                "injection_events": delivered, "cleanup_succeeded": cleanup_ok,
+                "injection_events": provenance, "cleanup_succeeded": cleanup_ok,
                 "http_status": status_code, "response_excerpt": redact_text(body, request.payload)[:1200],
                 "invocation_error": invocation_error}
             if not armed or not cleanup_ok:

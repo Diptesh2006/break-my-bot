@@ -39,10 +39,11 @@ class EndpointCandidate(BaseModel):
 
 class InstrumentedToolFault(BaseModel):
     tool: str = Field(min_length=1, max_length=100)
-    kind: Literal["timeout", "exception", "empty_response", "malformed_response", "delay"]
+    kind: Literal["timeout", "exception", "empty_response", "malformed_response", "delay", "lost_acknowledgment"]
     expected_substring: str | None = Field(default=None, max_length=1000)
     delay_seconds: float = Field(default=0, ge=0, le=30)
     every_n_calls: int = Field(default=1, ge=1, le=100)
+    on_call: int | None = Field(default=None, ge=1, le=100)
 
 
 class InstrumentedFaultChain(BaseModel):

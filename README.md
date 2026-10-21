@@ -117,6 +117,16 @@ For a deterministic failing control, also start the demo with `DEMO_UNSAFE_TOOL_
 
 The example `examples/demo-agent/tool-faults.json` also includes an ordered two-tool chain for `/api/chat/chain`: it injects an exception in `customer_context`, then a timeout in `refund_policy`, and verifies the safe support fallback. The automated suite covers this target-side session/provenance/cleanup flow.
 
+The isolated fake refund dependency also demonstrates an actual duplicate side effect after a lost acknowledgment. Start the demo with instrumentation enabled as above, reset its fake service, then run:
+
+```powershell
+Invoke-RestMethod -Method Post -Uri http://localhost:8001/api/refund/reset
+breakmybot test --url http://localhost:8001 --endpoint /api/refund/retry --payload-json '{}' --profile quick --instrumented-faults examples/demo-agent/duplicate-action-fault.json --allow-repeated-post
+Invoke-RestMethod -Uri http://localhost:8001/api/refund/state
+```
+
+The baseline request is explicitly side-effect-free; only an armed session performs the fake refund. The fault runs the first fake action, loses its acknowledgment, and lets the demo agent retry. Without an idempotency key, the isolated service counter reaches 2 and the configured `side-effect count 1` invariant fails. Repeat after reset with `--payload-json '{"idempotency_key":"local-test-refund-1"}'`; the same ordered event should be observed while the fake service count remains 1 and the invariant passes. This fixture never calls a real payment/refund service. Its automated acceptance test verifies both counts from the fixture state endpoint and requires confirmed lost-ack provenance and session cleanup before accepting the assessment evidence.
+
 The demo also includes a resettable in-process memory fixture for grounded stale-answer checks. To seed stale state, run `Invoke-RestMethod -Method Post -Uri http://localhost:8001/api/memory/seed -ContentType 'application/json' -Body '{"value":"Customers may request a refund within 30 days of purchase."}'`, then use `breakmybot test --url http://localhost:8001 --endpoint /api/chat/sse --payload-json '{"messages":[{"role":"user","content":"What is the refund window?"}]}' --profile quick --expected '14 days'`. The expected invariant should fail against the seeded 30-day memory. Reset with `Invoke-RestMethod -Method Post -Uri http://localhost:8001/api/memory/reset`. This local fixture proves a stale answer is observable; actual MemoryScope judge evaluation still requires its separately configured service and explicit consent. The demo endpoints are unauthenticated and must stay isolated on localhost.
 
 ## Development

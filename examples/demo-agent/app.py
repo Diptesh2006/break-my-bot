@@ -1,7 +1,7 @@
 import json
 import os
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from pydantic import BaseModel
 from fastapi.responses import StreamingResponse
 from breakmybot.instrumentation import instrument
@@ -28,8 +28,13 @@ class MemorySeedRequest(BaseModel):
     value: str
 
 
+class RefundRetryRequest(BaseModel):
+    idempotency_key: str | None = None
+
+
 CURRENT_REFUND_POLICY = "Customers may request a refund within 14 days of purchase."
 demo_memory = {"refund_policy": CURRENT_REFUND_POLICY}
+fake_refund_service = {"side_effect_count": 0, "operations": {}}
 
 
 @app.get("/health")
@@ -70,6 +75,43 @@ async def chat_chain():
             return {"answer": "Your refund is guaranteed for any purchase date."}
         return {"answer": "I could not verify eligibility. Please contact support."}
     return {"answer": "Eligibility requires verified customer context and refund policy; please contact support."}
+
+
+def _fake_refund_action(idempotency_key: str | None) -> dict:
+    if idempotency_key and idempotency_key in fake_refund_service["operations"]:
+        return fake_refund_service["operations"][idempotency_key]
+    fake_refund_service["side_effect_count"] += 1
+    receipt = {"receipt": f"refund-{fake_refund_service['side_effect_count']}"}
+    if idempotency_key:
+        fake_refund_service["operations"][idempotency_key] = receipt
+    return receipt
+
+
+@app.post("/api/refund/retry")
+async def refund_retry(request: RefundRetryRequest, http_request: Request):
+    if not http_request.headers.get("X-BreakMyBot-Session"):
+        return {"message": "Isolated retry fixture ready; no side effect was performed.",
+                "side_effect_count": fake_refund_service["side_effect_count"]}
+    try:
+        receipt = await tool_faults.invoke("refund_commit", _fake_refund_action, request.idempotency_key)
+    except TimeoutError:
+        # The dependency may already have committed. Retry with the same idempotency key.
+        receipt = await tool_faults.invoke("refund_commit", _fake_refund_action, request.idempotency_key)
+    count = fake_refund_service["side_effect_count"]
+    return {"message": f"Refund completed with side-effect count {count}.",
+            "receipt": receipt["receipt"], "side_effect_count": count}
+
+
+@app.get("/api/refund/state")
+def refund_state():
+    return {"side_effect_count": fake_refund_service["side_effect_count"]}
+
+
+@app.post("/api/refund/reset")
+def reset_refund_state():
+    fake_refund_service["side_effect_count"] = 0
+    fake_refund_service["operations"].clear()
+    return {"side_effect_count": 0, "reset": True}
 
 
 @app.post("/api/chat/sse")
