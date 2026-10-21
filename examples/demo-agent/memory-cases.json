@@ -1,0 +1,11 @@
+[
+  {
+    "name": "Refund window",
+    "question": "How long do I have to request a refund?",
+    "reference": "Customers may request a refund within 14 days of purchase.",
+    "expected": "State that the refund window is 14 days.",
+    "required_literals": ["14"],
+    "forbidden_literals": ["30 days"],
+    "require_citations": false
+  }
+]
