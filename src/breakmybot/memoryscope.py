@@ -11,6 +11,11 @@ from .models import MemoryAssessment, RunRequest, ScenarioResult
 from .target import docker_resolve_url, validate_target
 
 
+def supports_external_answer_evaluation(manifest: dict) -> bool:
+    return (manifest.get("contract") == "memoryscope-answer-evaluation-v1"
+            and manifest.get("capabilities", {}).get("external_agent_answer_evaluation") is True)
+
+
 def _agent_url(request: RunRequest, agent_path: str) -> str:
     parsed = urlsplit(str(request.target_url))
     origin = urlunsplit((parsed.scheme, parsed.netloc, "", "", ""))
@@ -38,6 +43,13 @@ async def evaluate(request: RunRequest, config: MemoryAssessment, cancel: asynci
     try:
         validate_target(api_base)
         async with httpx.AsyncClient(timeout=20, follow_redirects=False, trust_env=False) as client:
+            capabilities_response = await client.get(api_base.rstrip("/") + "/api/beta/capabilities")
+            capabilities_response.raise_for_status()
+            capabilities = capabilities_response.json()
+            if not supports_external_answer_evaluation(capabilities):
+                return [ScenarioResult(scenario_id="memoryscope-contract", name="MemoryScope integration contract",
+                    category="Output correctness", status="SETUP_ERROR",
+                    limitation="MemoryScope does not advertise the supported external-agent answer-evaluation contract.")]
             settings_response = await client.get(api_base.rstrip("/") + "/api/beta/settings")
             settings_response.raise_for_status()
             settings = settings_response.json()

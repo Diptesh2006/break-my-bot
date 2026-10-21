@@ -6,7 +6,7 @@ from httpx import ASGITransport, AsyncClient
 from breakmybot import runner, store
 from breakmybot.api import app as api_app
 from breakmybot.models import MemoryAssessment, MemoryCase, RunRecord, RunRequest, ScenarioResult
-from breakmybot.memoryscope import evaluate as evaluate_memory
+from breakmybot.memoryscope import evaluate as evaluate_memory, supports_external_answer_evaluation
 from breakmybot.instrumentation import ToolFault, instrument_tool_calls
 from breakmybot.planner import mock_plan, plan
 from breakmybot.reports import generate
@@ -118,6 +118,15 @@ async def test_memoryscope_bridge_skips_without_explicit_nrouter_consent():
     assert len(results) == 1
     assert results[0].status == "SKIPPED"
     assert "not authorized" in results[0].limitation
+
+
+def test_memoryscope_contract_accepts_only_advertised_answer_evaluation():
+    assert supports_external_answer_evaluation({"contract": "memoryscope-answer-evaluation-v1",
+        "capabilities": {"external_agent_answer_evaluation": True}})
+    assert not supports_external_answer_evaluation({"contract": "memoryscope-answer-evaluation-v1",
+        "capabilities": {"persistent_memory_lifecycle": True}})
+    assert not supports_external_answer_evaluation({"contract": "unknown", "capabilities": {
+        "external_agent_answer_evaluation": True}})
 
 
 def test_deterministic_planner_marks_unsupported_fault_injection_as_unexecutable():
