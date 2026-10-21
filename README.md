@@ -1,10 +1,25 @@
 # BreakMyBot
 
-**Break your AI so your users don't have to.**
+**Give your AI a controlled bad day—before production gives it a catastrophic one.**
 
-BreakMyBot connects to an AI application's HTTP API, discovers OpenAPI endpoints and request shapes, performs bounded real invocations, records response and latency evidence, computes a deterministic score only when enough checks ran, and generates portable JSON, HTML, and PDF reports.
+Your agent works in the happy path. What happens when a tool times out, memory goes stale, an acknowledgment disappears, or requests hit at once? BreakMyBot runs bounded experiments against a real, authorized AI application, checks what actually happened, and turns reproducible failures into evidence you can act on.
 
-BreakMyBot is a standalone repository: its API, durable worker, SQLite/PostgreSQL storage, CLI, reports, demo target, and bundled dashboard are all part of this project. It supports black-box HTTP checks and opt-in FastAPI tool-fault instrumentation. Persistent memory lifecycle, security boundaries, and hidden agent state remain unsupported unless a suitable target adapter exists. Optional MemoryScope and nRouter integrations do not need to be installed to use the default product. Reports distinguish score from coverage and never present the score as a probability of safety.
+## Break it. Verify it. Fix it.
+
+- **Find the real interface.** Discover OpenAPI routes, request shapes, health checks, and streaming endpoints—or provide the endpoint and payload yourself.
+- **Test the running application.** Capture actual status codes, response contracts, latency, and explicit expected-answer checks.
+- **Inject faults only where the target allows it.** Opt-in agent instrumentation can trigger tool timeouts, exceptions, malformed results, and ordered fault chains. Every scored injection needs target-side confirmation and successful cleanup.
+- **Catch failures that compound.** Exercise stale memory, cascading tool failures, and lost acknowledgments against resettable, isolated demo fixtures. Verify side effects instead of inferring them.
+- **Get evidence, not vibes.** Persist observations and reproducible findings; export portable JSON, HTML, and PDF reports.
+- **Know what wasn’t tested.** Score and coverage stay separate. Unsupported capabilities remain visible, and a score is withheld when evidence is insufficient.
+
+### Standalone by design
+
+Clone this repository and run it: BreakMyBot includes its API, worker, database setup, CLI, dashboard, reports, and deterministic demo. Turbulence and MemoryScope are optional, separately operated references—not hidden dependencies or borrowed demo scores. nRouter is the default provider for the consent-gated AI planner; the deterministic workflow needs no API key and makes no paid model calls.
+
+### Controlled by design
+
+Targets are restricted to loopback or explicitly allowlisted test networks. POST calls and repeated or concurrent probes require deliberate opt-in. AI-generated proposals are hypotheses by default; executing them requires separate consent and an operator-approved fault and assertion allowlist. An ordinary HTTP connection cannot reveal internal tools or memory, so those capabilities stay untested unless the target exposes a supported adapter.
 
 ## Quick start
 
