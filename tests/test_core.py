@@ -492,6 +492,65 @@ async def test_target_preflight_fails_closed_when_auth_environment_variable_miss
 
 
 @pytest.mark.asyncio
+async def test_standalone_demo_discovery_to_worker_report_acceptance(tmp_path, monkeypatch):
+    import importlib.util
+    import sys
+    from breakmybot import target, worker
+    from breakmybot.api import app as product_api
+    demo_path = Path(__file__).resolve().parents[1] / "examples" / "demo-agent" / "app.py"
+    spec = importlib.util.spec_from_file_location("acceptance_demo_agent", demo_path)
+    assert spec and spec.loader
+    demo_agent = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = demo_agent
+    spec.loader.exec_module(demo_agent)
+
+    monkeypatch.setenv("BREAKMYBOT_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("BREAKMYBOT_DOCKER_MODE", "false")
+    original_client = httpx.AsyncClient
+
+    def demo_client(*args, **kwargs):
+        return original_client(*args, **kwargs, transport=ASGITransport(app=demo_agent.app))
+
+    monkeypatch.setattr(target.httpx, "AsyncClient", demo_client)
+    async with AsyncClient(transport=ASGITransport(app=product_api), base_url="http://breakmybot") as client:
+        discovery = await client.post("/api/targets/discover", json={"url": "http://127.0.0.1:8001"})
+        assert discovery.status_code == 200
+        found = discovery.json()
+        assert found["reachable"] is True and found["openapi_found"] is True
+        candidate = next(item for item in found["endpoints"] if item["path"] == "/api/chat")
+        assert candidate["payload_template"] == {"message": "Hello. Please reply briefly."}
+
+        preflight = await client.post("/api/targets/preflight", json={"target_url": "http://127.0.0.1:8001",
+            "endpoint_path": candidate["path"], "method": candidate["method"],
+            "payload": {"message": "refund policy"}, "profile": "quick"})
+        assert preflight.status_code == 200
+        assert preflight.json()["successful"] is True
+        assert preflight.json()["status_code"] == 200
+
+        accepted = await client.post("/api/runs", json={"target_url": "http://127.0.0.1:8001",
+            "endpoint_path": candidate["path"], "method": candidate["method"],
+            "payload": {"message": "refund policy"}, "profile": "quick",
+            "expected_substring": "14 days"})
+        assert accepted.status_code == 202
+        run_id = accepted.json()["run_id"]
+        assert await worker.process_one_job() is True
+        result = await client.get(f"/api/runs/{run_id}")
+        assert result.status_code == 200
+        run = result.json()
+        assert run["status"] == "COMPLETED"
+        baseline = next(item for item in run["scenarios"] if item["scenario_id"] == "baseline")
+        assert baseline["status"] == "PASSED"
+        assert "14 days" in baseline["evidence"]["response_excerpt"]
+        html = await client.get(f"/api/runs/{run_id}/report.html")
+        pdf = await client.get(f"/api/runs/{run_id}/report.pdf")
+        report_json = await client.get(f"/api/runs/{run_id}/report.json")
+        assert html.status_code == 200 and run_id in html.text and "AI RELIABILITY ASSESSMENT" in html.text
+        assert pdf.status_code == 200 and pdf.content.startswith(b"%PDF")
+        assert report_json.status_code == 200 and report_json.json()["id"] == run_id
+        assert "14 days" in report_json.json()["scenarios"][0]["evidence"]["response_excerpt"]
+
+
+@pytest.mark.asyncio
 async def test_runner_executes_and_persists_observed_scenarios(tmp_path: Path, monkeypatch):
     monkeypatch.setenv("BREAKMYBOT_DATA_DIR", str(tmp_path))
     monkeypatch.setenv("BREAKMYBOT_DOCKER_MODE", "false")
