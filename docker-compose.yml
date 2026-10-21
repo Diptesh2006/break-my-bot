@@ -25,7 +25,7 @@ services:
     environment:
       BREAKMYBOT_DATA_DIR: /app/data
       BREAKMYBOT_DATABASE_URL: ${BREAKMYBOT_DATABASE_URL:-postgresql://${POSTGRES_USER:-breakmybot}:${POSTGRES_PASSWORD:-breakmybot-local-only}@postgres:5432/${POSTGRES_DB:-breakmybot}}
-      BREAKMYBOT_ALLOWED_HOSTS: host.docker.internal
+      BREAKMYBOT_ALLOWED_HOSTS: ${BREAKMYBOT_ALLOWED_HOSTS:-host.docker.internal}
       BREAKMYBOT_DOCKER_MODE: "true"
       BREAKMYBOT_REQUEST_TIMEOUT_SECONDS: ${BREAKMYBOT_REQUEST_TIMEOUT_SECONDS:-15}
     volumes:
@@ -43,7 +43,7 @@ services:
     environment:
       BREAKMYBOT_DATA_DIR: /app/data
       BREAKMYBOT_DATABASE_URL: ${BREAKMYBOT_DATABASE_URL:-postgresql://${POSTGRES_USER:-breakmybot}:${POSTGRES_PASSWORD:-breakmybot-local-only}@postgres:5432/${POSTGRES_DB:-breakmybot}}
-      BREAKMYBOT_ALLOWED_HOSTS: host.docker.internal
+      BREAKMYBOT_ALLOWED_HOSTS: ${BREAKMYBOT_ALLOWED_HOSTS:-host.docker.internal}
       BREAKMYBOT_DOCKER_MODE: "true"
       BREAKMYBOT_REQUEST_TIMEOUT_SECONDS: ${BREAKMYBOT_REQUEST_TIMEOUT_SECONDS:-15}
     extra_hosts:
