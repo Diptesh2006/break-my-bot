@@ -14,7 +14,9 @@ Start the BreakMyBot API and local storage:
 docker compose up -d --build
 ```
 
-The API binds to `127.0.0.1:8000`; a separate worker claims durable jobs from the shared SQLite database. Queued runs survive API restarts. Worker leases are renewed while a run executes; an expired in-flight run is marked failed instead of automatically replayed, avoiding duplicate target side effects. Swagger docs are at `http://127.0.0.1:8000/docs`.
+BreakMyBot is self-contained: clone this repository and run `docker compose up -d --build`. It starts the API at `http://127.0.0.1:8000`, a worker, and the Next.js dashboard at `http://127.0.0.1:3000`; SQLite and reports are stored in this checkout's `data/` directory. Turbulence and MemoryScope are not required to install, run, or use the default product. Swagger docs are at `http://127.0.0.1:8000/docs`.
+
+Queued runs survive API restarts. Worker leases are renewed while a run executes; an expired in-flight run is marked failed instead of automatically replayed, avoiding duplicate target side effects.
 
 Install the CLI from this checkout (Python 3.11+):
 
@@ -73,11 +75,11 @@ Methodology `breakmybot-score-v3` computes per-category pass ratios, then combin
 - `GET /api/runs/{id}/report.{html|pdf|json}`
 - `GET /api/scoring/methodology`
 
-SQLite run, event, and queued-job records and report artifacts are stored under `data/`. The local deployment supports one active worker process using SQLite leases; horizontal multi-worker scaling, PostgreSQL, user accounts, and an independently built Next.js dashboard are not implemented in this release. The current dashboard is served by the API.
+The local deployment supports one active worker process using SQLite leases; horizontal multi-worker scaling, PostgreSQL, user accounts, and dashboard authentication are not implemented in this release. The bundled dashboard displays persisted API data; keep it bound to loopback.
 
 ## Integrating Turbulence and MemoryScope
 
-The reference audit is in [`docs/reference-audit.md`](docs/reference-audit.md). Turbulence's seeded faults currently wrap its own Concentrate adapter and cannot affect an arbitrary target. MemoryScope tests a real external SSE endpoint against supplied references but requires an nRouter judge model and explicit consent; its current beta does not cover persistent memory lifecycle. BreakMyBot does not import their code via local paths or transfer their internal demo scores. Adapter contracts and these limits are documented in [`docs/integration-boundaries.md`](docs/integration-boundaries.md).
+The reference audit is in [`docs/reference-audit.md`](docs/reference-audit.md). These are optional, separately operated integrations—not runtime dependencies. Turbulence's seeded faults currently wrap its own Concentrate adapter and cannot affect an arbitrary target. MemoryScope tests a real external SSE endpoint against supplied references but requires an nRouter judge model and explicit consent; its current beta does not cover persistent memory lifecycle. BreakMyBot does not import their code via local paths or transfer their internal demo scores. Adapter contracts and these limits are documented in [`docs/integration-boundaries.md`](docs/integration-boundaries.md).
 
 Agent developers can opt into session-scoped tool fault injection. Install BreakMyBot in the target agent's Python environment and wire tool calls through its returned controller. The control API is installed only when `enabled=True`, requires a bearer token of at least 32 characters, and only applies faults to a request carrying the armed `X-BreakMyBot-Session` header:
 

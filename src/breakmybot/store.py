@@ -87,8 +87,25 @@ def renew_job_lease(run_id: str, lease_seconds: int = 900) -> bool:
 
 def cancel_job(run_id: str) -> bool:
     with connect() as db:
-        cursor = db.execute("UPDATE jobs SET cancel_requested=1 WHERE run_id=? AND status IN ('QUEUED','RUNNING')", (run_id,))
-        return cursor.rowcount > 0
+        db.execute("BEGIN IMMEDIATE")
+        row = db.execute("SELECT status FROM jobs WHERE run_id=?", (run_id,)).fetchone()
+        if not row or row[0] not in {"QUEUED", "RUNNING"}:
+            return False
+        if row[0] == "QUEUED":
+            db.execute("UPDATE jobs SET status='CANCELLED',cancel_requested=1 WHERE run_id=?", (run_id,))
+            run_row = db.execute("SELECT payload FROM runs WHERE id=?", (run_id,)).fetchone()
+            if run_row:
+                run = RunRecord.model_validate_json(run_row[0])
+                from datetime import datetime, timezone
+                run.status = "CANCELLED"
+                run.completed_at = datetime.now(timezone.utc)
+                db.execute("UPDATE runs SET payload=? WHERE id=?",
+                           (json.dumps(run.model_dump(mode="json"), ensure_ascii=False), run_id))
+                db.execute("INSERT INTO events(run_id,event) VALUES(?,?)",
+                           (run_id, json.dumps({"type": "run.cancelled", "phase": "CANCELLED"})))
+        else:
+            db.execute("UPDATE jobs SET cancel_requested=1 WHERE run_id=?", (run_id,))
+        return True
 
 
 def job_cancel_requested(run_id: str) -> bool:

@@ -32,3 +32,12 @@ services:
     volumes:
       - ./data:/app/data
     restart: unless-stopped
+  dashboard:
+    build: ./dashboard
+    environment:
+      BREAKMYBOT_API_ORIGIN: http://api:8000
+    ports:
+      - "127.0.0.1:3000:3000"
+    depends_on:
+      - api
+    restart: unless-stopped
