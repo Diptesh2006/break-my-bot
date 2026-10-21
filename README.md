@@ -1,6 +1,6 @@
 # BreakMyBot
 
-**We break your AI so your users don't have to.**
+**Break your AI so your users don't have to.**
 
 BreakMyBot connects to an AI application's HTTP API, discovers OpenAPI endpoints and request shapes, performs bounded real invocations, records response and latency evidence, computes a deterministic score only when enough checks ran, and generates portable JSON, HTML, and PDF reports.
 
