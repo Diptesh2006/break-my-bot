@@ -15,15 +15,32 @@ def data_dir() -> Path:
     return path
 
 
+def _migrate(db: sqlite3.Connection) -> None:
+    """Apply ordered, idempotent SQLite schema migrations."""
+    db.execute("CREATE TABLE IF NOT EXISTS schema_migrations (version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)")
+    applied = {row[0] for row in db.execute("SELECT version FROM schema_migrations")}
+    if 1 not in applied:
+        db.execute("CREATE TABLE IF NOT EXISTS runs (id TEXT PRIMARY KEY, created_at TEXT NOT NULL, payload TEXT NOT NULL)")
+        db.execute("CREATE TABLE IF NOT EXISTS projects (id TEXT PRIMARY KEY, created_at TEXT NOT NULL, payload TEXT NOT NULL)")
+        db.execute("CREATE TABLE IF NOT EXISTS events (sequence INTEGER PRIMARY KEY AUTOINCREMENT, run_id TEXT NOT NULL, event TEXT NOT NULL)")
+        db.execute("CREATE TABLE IF NOT EXISTS jobs (run_id TEXT PRIMARY KEY, request TEXT NOT NULL, status TEXT NOT NULL, cancel_requested INTEGER NOT NULL DEFAULT 0, lease_until REAL, attempts INTEGER NOT NULL DEFAULT 0, created_at REAL NOT NULL)")
+        db.execute("INSERT INTO schema_migrations(version) VALUES(1)")
+        applied.add(1)
+    if 2 not in applied:
+        columns = {row[1] for row in db.execute("PRAGMA table_info(runs)")}
+        if "project_id" not in columns:
+            db.execute("ALTER TABLE runs ADD COLUMN project_id TEXT")
+        db.execute("INSERT INTO schema_migrations(version) VALUES(2)")
+
+
 def connect() -> sqlite3.Connection:
     db = sqlite3.connect(data_dir() / "breakmybot.sqlite3", timeout=10)
-    db.execute("CREATE TABLE IF NOT EXISTS runs (id TEXT PRIMARY KEY, created_at TEXT NOT NULL, payload TEXT NOT NULL)")
-    db.execute("CREATE TABLE IF NOT EXISTS projects (id TEXT PRIMARY KEY, created_at TEXT NOT NULL, payload TEXT NOT NULL)")
-    db.execute("CREATE TABLE IF NOT EXISTS events (sequence INTEGER PRIMARY KEY AUTOINCREMENT, run_id TEXT NOT NULL, event TEXT NOT NULL)")
-    db.execute("CREATE TABLE IF NOT EXISTS jobs (run_id TEXT PRIMARY KEY, request TEXT NOT NULL, status TEXT NOT NULL, cancel_requested INTEGER NOT NULL DEFAULT 0, lease_until REAL, attempts INTEGER NOT NULL DEFAULT 0, created_at REAL NOT NULL)")
-    columns = {row[1] for row in db.execute("PRAGMA table_info(runs)")}
-    if "project_id" not in columns:
-        db.execute("ALTER TABLE runs ADD COLUMN project_id TEXT")
+    try:
+        with db:
+            _migrate(db)
+    except Exception:
+        db.close()
+        raise
     return db
 
 

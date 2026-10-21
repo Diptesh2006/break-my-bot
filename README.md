@@ -40,7 +40,7 @@ uvicorn breakmybot.api:app --host 127.0.0.1 --port 8000
 python -m breakmybot.worker
 ```
 
-They use local SQLite storage under `data/`. For a quick CLI-only check against your own reachable target, `breakmybot test --url <target-url>` does not require the API or worker. Queued runs survive API restarts; an expired in-flight run is marked failed rather than replayed, avoiding duplicate target side effects.
+They use local SQLite storage under `data/`; ordered SQLite schema migrations are applied automatically at startup. For a quick CLI-only check against your own reachable target, `breakmybot test --url <target-url>` does not require the API or worker. Queued runs survive API restarts; an expired in-flight run is marked failed rather than replayed, avoiding duplicate target side effects. PostgreSQL is not currently supported.
 
 Run an assessment against a local target:
 

@@ -81,6 +81,30 @@ def test_project_schema_migrates_existing_runs_without_losing_records(tmp_path, 
     assert "project_id" in columns
 
 
+def test_sqlite_migrations_are_recorded_and_idempotent(tmp_path, monkeypatch):
+    monkeypatch.setenv("BREAKMYBOT_DATA_DIR", str(tmp_path))
+
+    with store.connect() as db:
+        assert db.execute("SELECT version FROM schema_migrations ORDER BY version").fetchall() == [(1,), (2,)]
+    with store.connect() as db:
+        assert db.execute("SELECT version FROM schema_migrations ORDER BY version").fetchall() == [(1,), (2,)]
+
+
+def test_legacy_database_gets_migration_history(tmp_path, monkeypatch):
+    monkeypatch.setenv("BREAKMYBOT_DATA_DIR", str(tmp_path))
+    legacy = sqlite3.connect(tmp_path / "breakmybot.sqlite3")
+    legacy.execute("CREATE TABLE runs (id TEXT PRIMARY KEY, created_at TEXT NOT NULL, payload TEXT NOT NULL)")
+    legacy.execute("CREATE TABLE projects (id TEXT PRIMARY KEY, created_at TEXT NOT NULL, payload TEXT NOT NULL)")
+    legacy.execute("CREATE TABLE events (sequence INTEGER PRIMARY KEY AUTOINCREMENT, run_id TEXT NOT NULL, event TEXT NOT NULL)")
+    legacy.execute("CREATE TABLE jobs (run_id TEXT PRIMARY KEY, request TEXT NOT NULL, status TEXT NOT NULL, cancel_requested INTEGER NOT NULL DEFAULT 0, lease_until REAL, attempts INTEGER NOT NULL DEFAULT 0, created_at REAL NOT NULL)")
+    legacy.commit()
+    legacy.close()
+
+    with store.connect() as migrated:
+        assert migrated.execute("SELECT version FROM schema_migrations ORDER BY version").fetchall() == [(1,), (2,)]
+        assert {row[1] for row in migrated.execute("PRAGMA table_info(runs)")} >= {"id", "project_id"}
+
+
 @pytest.mark.asyncio
 async def test_project_api_filters_runs_and_rejects_cross_target_association(tmp_path, monkeypatch):
     monkeypatch.setenv("BREAKMYBOT_DATA_DIR", str(tmp_path))
