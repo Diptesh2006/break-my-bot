@@ -10,7 +10,7 @@ from fastapi import FastAPI, HTTPException, Query
 from fastapi.responses import FileResponse, HTMLResponse, StreamingResponse
 from dotenv import load_dotenv
 
-from . import runner, store
+from . import runner, scoring, store
 from .models import DiscoveryRequest, RunAccepted, RunRecord, RunRequest
 from .target import discover
 from .redaction import redact_payload
@@ -94,7 +94,13 @@ async def create_run(request: RunRequest):
 
 @app.get("/api/runs")
 def list_runs(limit: int = Query(default=30, ge=1, le=100)):
-    return [run.model_dump(mode="json") for run in store.latest(limit)]
+    return [_current_run(run) for run in store.latest(limit)]
+
+
+def _current_run(run: RunRecord) -> dict:
+    data = run.model_dump(mode="json")
+    data["scoring"] = scoring.calculate(run)
+    return data
 
 
 @app.get("/api/runs/{run_id}")
@@ -102,7 +108,7 @@ def get_run(run_id: str):
     run = store.get(run_id)
     if not run:
         raise HTTPException(404, "Run not found")
-    return run.model_dump(mode="json")
+    return _current_run(run)
 
 
 @app.post("/api/runs/{run_id}/cancel")
@@ -140,6 +146,10 @@ def _report(run_id: str, format: str):
     run = store.get(run_id)
     if not run:
         raise HTTPException(404, "Run not found")
+    run.scoring = scoring.calculate(run)
+    if run.status in {"COMPLETED", "PARTIAL", "CANCELLED"}:
+        run.report_paths = runner.reports.generate(run, store.data_dir() / "reports" / run.id)
+        store.save(run)
     if format not in {"html", "pdf", "json"}:
         raise HTTPException(404, "Unsupported report format")
     path = run.report_paths.get(format)
@@ -161,5 +171,7 @@ def download_report(run_id: str, format: str):
 
 @app.get("/api/scoring/methodology")
 def scoring_methodology():
-    return {"version": "breakmybot-score-v2", "score_scope": "evidence-backed executed scenarios, including opt-in instrumented tool faults and grounded answer evaluations", "coverage_is_separate": True,
-        "unsupported_tests_are_not_passes": True, "minimum_conclusive_scenarios": 3}
+    return {"version": scoring.METHODOLOGY_VERSION, "category_weights": scoring.CATEGORY_WEIGHTS,
+        "score_scope": "evidence-backed executed scenarios, weighted within observed categories",
+        "coverage_is_separate": True, "unsupported_tests_are_not_passes": True,
+        "minimum_conclusive_scenarios": 3}

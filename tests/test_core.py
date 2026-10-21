@@ -249,17 +249,43 @@ def test_openapi_discovery_prefers_chat_and_builds_payload():
 def test_score_excludes_unsupported_from_passes_and_keeps_coverage_separate():
     run = RunRecord(target_url="http://localhost:8000", endpoint_path="/chat", method="POST", profile="standard")
     run.scenarios = [
-        ScenarioResult(scenario_id="a", name="a", category="HTTP", status="PASSED"),
-        ScenarioResult(scenario_id="b", name="b", category="HTTP", status="PASSED"),
-        ScenarioResult(scenario_id="c", name="c", category="HTTP", status="VERIFIED_FAILURE"),
-        ScenarioResult(scenario_id="d", name="d", category="Memory", status="UNSUPPORTED"),
+        ScenarioResult(scenario_id="a", name="a", category="HTTP reliability", status="PASSED"),
+        ScenarioResult(scenario_id="b", name="b", category="HTTP reliability", status="PASSED"),
+        ScenarioResult(scenario_id="c", name="c", category="HTTP reliability", status="VERIFIED_FAILURE"),
+        ScenarioResult(scenario_id="d", name="d", category="Memory integrity", status="UNSUPPORTED"),
     ]
     score = calculate(run)
-    assert score["overall_score"] == 67
+    assert score["overall_score"] is None
+    assert score["observed_weight_percent"] == 20
     assert score["coverage_percent"] == 75
     assert score["scenario_counts"]["UNSUPPORTED"] == 1
-    assert score["category_scores"]["Memory"]["score"] is None
-    assert score["category_scores"]["Memory"]["coverage_percent"] == 0
+    assert score["category_scores"]["Memory integrity"]["score"] is None
+    assert score["category_scores"]["Memory integrity"]["coverage_percent"] == 0
+
+
+def test_weighted_score_matches_hand_calculation_and_exposes_observed_weight():
+    run = RunRecord(target_url="http://localhost:8000", endpoint_path="/chat", method="POST", profile="standard")
+    run.scenarios = [
+        ScenarioResult(scenario_id="http-pass", name="HTTP pass", category="HTTP reliability", status="PASSED"),
+        ScenarioResult(scenario_id="http-fail", name="HTTP fail", category="HTTP reliability", status="VERIFIED_FAILURE"),
+        ScenarioResult(scenario_id="tool-pass", name="Tool pass", category="Tool reliability", status="PASSED"),
+    ]
+    score = calculate(run)
+    # (0.20 * 50 + 0.20 * 100) / 0.40 = 75
+    assert score["methodology"] == "breakmybot-score-v3"
+    assert score["overall_score"] is None
+    assert score["observed_weight_percent"] == 40
+    assert score["category_scores"]["HTTP reliability"]["weight"] == 0.20
+
+
+def test_score_is_not_established_below_half_of_rubric_weight():
+    run = RunRecord(target_url="http://localhost:8000", endpoint_path="/chat", method="GET", profile="quick")
+    run.scenarios = [ScenarioResult(scenario_id=str(i), name="Latency", category="Latency", status="PASSED")
+                     for i in range(3)]
+    score = calculate(run)
+    assert score["observed_weight_percent"] == 10
+    assert score["overall_score"] is None
+    assert score["score_label"] == "Not established"
 
 
 def test_score_lists_observed_instrumentation_and_removes_it_from_untested():
@@ -323,7 +349,8 @@ async def test_runner_executes_and_persists_observed_scenarios(tmp_path: Path, m
     result = await runner.execute(run.id, request)
     persisted = store.get(run.id)
     assert result.status == "COMPLETED"
-    assert result.scoring["overall_score"] == 100
+    assert result.scoring["overall_score"] is None
+    assert result.scoring["observed_weight_percent"] == 45
     assert result.scoring["category_scores"]["Output correctness"]["score"] == 100
     assert persisted is not None and len(persisted.scenarios) == 15
     assert "test-secret" not in str(persisted.scenarios)
