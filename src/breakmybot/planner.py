@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import re
@@ -38,6 +39,8 @@ def _provider_settings(role: str = "planner") -> dict[str, str]:
             "model": (os.getenv(f"BREAKMYBOT_{role.upper()}_MODEL", "").strip()
                 or os.getenv("BREAKMYBOT_PLANNER_MODEL", "").strip()
                 or os.getenv("BREAKMYBOT_LLM_MODEL", "").strip()),
+            "fallback_model": (os.getenv(f"BREAKMYBOT_{role.upper()}_FALLBACK_MODEL", "").strip()
+                or os.getenv("BREAKMYBOT_LLM_FALLBACK_MODEL", "").strip()),
             "auth_header": "Authorization", "auth_scheme": "Bearer",
             "token_parameter": os.getenv("BREAKMYBOT_LLM_TOKEN_PARAMETER", "").strip()
                 or "max_completion_tokens",
@@ -53,6 +56,8 @@ def _provider_settings(role: str = "planner") -> dict[str, str]:
         "model": (os.getenv(f"BREAKMYBOT_{role.upper()}_MODEL", "").strip()
             or os.getenv("BREAKMYBOT_PLANNER_MODEL", "").strip()
             or os.getenv("BREAKMYBOT_LLM_MODEL", "").strip()),
+        "fallback_model": (os.getenv(f"BREAKMYBOT_{role.upper()}_FALLBACK_MODEL", "").strip()
+            or os.getenv("BREAKMYBOT_LLM_FALLBACK_MODEL", "").strip()),
         "auth_header": os.getenv("BREAKMYBOT_LLM_AUTH_HEADER", "Authorization").strip(),
         "auth_scheme": os.getenv("BREAKMYBOT_LLM_AUTH_SCHEME", "Bearer").strip(),
         "token_parameter": os.getenv("BREAKMYBOT_LLM_TOKEN_PARAMETER", "").strip() or "max_tokens",
@@ -82,8 +87,47 @@ def public_provider_status() -> dict[str, str | bool]:
     settings = _provider_settings()
     judge = _provider_settings("judge")
     return {"provider": settings["name"], "model": settings["model"],
+        "fallback_model": settings["fallback_model"],
         "configured": provider_credentials_configured(), "judge_model": judge["model"],
+        "judge_fallback_model": judge["fallback_model"],
         "judge_configured": provider_credentials_configured("judge")}
+
+
+def configured_model_description(role: str = "planner") -> str:
+    settings = _provider_settings(role)
+    description = settings["model"]
+    if settings["fallback_model"] and settings["fallback_model"] != settings["model"]:
+        description += f" (fallback: {settings['fallback_model']} on primary-model HTTP 404)"
+    return description
+
+
+async def post_chat_completion(client: httpx.AsyncClient, url: str, provider: dict[str, str],
+                               payload: dict) -> tuple[httpx.Response, str, int]:
+    """Make a bounded provider request with transient-status retry and optional model fallback.
+
+    Network/timeout exceptions are not retried because the provider may have processed and billed
+    an ambiguous request. Only explicit retryable HTTP statuses receive one 250 ms retry.
+    A configured fallback is attempted only when the primary model returns HTTP 404.
+    """
+    primary = provider["model"]
+    fallback = provider.get("fallback_model", "")
+    models = [primary] + ([fallback] if fallback and fallback != primary else [])
+    attempts = 0
+    for model_index, model in enumerate(models):
+        for retry in range(2):
+            attempts += 1
+            response = await client.post(url, headers={
+                provider["auth_header"]: f"{provider['auth_scheme']} {provider['api_key']}".strip()},
+                json={**payload, "model": model})
+            if response.status_code == 404 and model_index == 0 and len(models) == 2:
+                break
+            if response.status_code in {429, 500, 502, 503, 504} and retry == 0:
+                await asyncio.sleep(0.25)
+                continue
+            response.raise_for_status()
+            return response, model, attempts
+    response.raise_for_status()
+    raise RuntimeError("Provider request did not produce a response")
 
 
 def _chat_completions_url(settings: dict[str, str]) -> str:
@@ -338,21 +382,19 @@ async def plan(request: RunRequest, baseline_profile: dict | None = None) -> dic
     }
     try:
         async with httpx.AsyncClient(timeout=25, follow_redirects=False, trust_env=False) as client:
-            auth_value = f"{provider['auth_scheme']} {api_key}".strip()
-            response = await client.post(url, headers={provider["auth_header"]: auth_value}, json={
-                "model": model,
+            response, selected_model, attempts = await post_chat_completion(client, url, provider, {
                 "messages": [{"role": "system", "content": system},
                              {"role": "user", "content": json.dumps(metadata)}],
                 provider["token_parameter"]: max_tokens,
                 "stream": False,
             })
-            response.raise_for_status()
             data = response.json()
         content = data["choices"][0]["message"]["content"]
         validated = ScenarioPlan.model_validate_json(content)
         proposals = sorted(validated.scenarios, key=lambda x: (x.impact * x.feasibility, x.impact), reverse=True)[:max_scenarios]
         return {"status": "completed", "provider": provider["name"], "requested_model": model,
-            "actual_model": data.get("model"), "usage": data.get("usage"), "provider_cost": data.get("cost"),
+            "selected_model": selected_model, "actual_model": data.get("model"),
+            "provider_attempts": attempts, "usage": data.get("usage"), "provider_cost": data.get("cost"),
             "investigation": validated.investigation.model_dump(),
             "scenarios": [{**item.model_dump(), **_gate(item, request)} for item in proposals],
             "note": ("Eligible generated scenarios will execute only within the supplied instrumentation and oracle allowlists."

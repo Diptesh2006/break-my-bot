@@ -590,7 +590,8 @@ async def _run_semantic_judge(run: RunRecord, request: RunRequest, timeout: floa
     if candidates and not (cancel and cancel.is_set()):
         provider_result = await semantic_judge.judge_answers(candidates)
         run.semantic_judging = {key: provider_result[key] for key in (
-            "status", "provider", "requested_model", "actual_model", "usage", "provider_cost", "reason")
+            "status", "provider", "requested_model", "selected_model", "actual_model",
+            "provider_attempts", "usage", "provider_cost", "reason")
             if key in provider_result}
         run.semantic_judging["judged_cases"] = len(provider_result.get("judgments", []))
         judgments = {item["case_id"]: item for item in provider_result.get("judgments", [])}

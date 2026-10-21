@@ -113,8 +113,8 @@ def generate(run: RunRecord, output_dir: Path) -> dict[str, str]:
 <h2>Category scorecard</h2><table><thead><tr><th>Category</th><th>Score</th><th>Coverage</th><th>Conclusive</th></tr></thead><tbody>{category_rows}</tbody></table>
 <h2>Findings</h2>{finding_rows}
 <h2>Scenario planning hypotheses</h2><table><thead><tr><th>Proposal</th><th>Hypothesis</th><th>Capability gate</th><th>Execution</th></tr></thead><tbody>{plan_rows}</tbody></table>
-<h2>LLM investigation · hypotheses, not scored facts</h2><p>Provider: {html.escape(str(run.planning.get('provider', 'not recorded')))} · Model: {html.escape(str(run.planning.get('actual_model', run.planning.get('requested_model', 'not recorded'))))}</p>{investigation_sections}
-<h2>Reference-grounded semantic judgments · fallible model evidence</h2><p>Status: {html.escape(str(run.semantic_judging.get('status', 'not requested')))} · Provider: {html.escape(str(run.semantic_judging.get('provider', 'not recorded')))} · Model: {html.escape(str(run.semantic_judging.get('actual_model', run.semantic_judging.get('requested_model', 'not recorded'))))} · Usage: {html.escape(str(run.semantic_judging.get('usage', 'not reported')))} · Cost: {html.escape(str(run.semantic_judging.get('provider_cost', 'not reported')))}</p><table><thead><tr><th>Case</th><th>Result</th><th>Confidence</th><th>Rationale</th><th>Answer quote</th><th>Reference quote</th></tr></thead><tbody>{semantic_rows}</tbody></table><p>A single model judgment is fallible; review its grounded quotes. The overall score is calculated by the fixed rubric from persisted scenario outcomes.</p>
+<h2>LLM investigation · hypotheses, not scored facts</h2><p>Provider: {html.escape(str(run.planning.get('provider', 'not recorded')))} · Model: {html.escape(str(run.planning.get('actual_model', run.planning.get('selected_model', run.planning.get('requested_model', 'not recorded')))))} · Attempts: {html.escape(str(run.planning.get('provider_attempts', 'not recorded')))}</p>{investigation_sections}
+<h2>Reference-grounded semantic judgments · fallible model evidence</h2><p>Status: {html.escape(str(run.semantic_judging.get('status', 'not requested')))} · Provider: {html.escape(str(run.semantic_judging.get('provider', 'not recorded')))} · Model: {html.escape(str(run.semantic_judging.get('actual_model', run.semantic_judging.get('selected_model', run.semantic_judging.get('requested_model', 'not recorded')))))} · Attempts: {html.escape(str(run.semantic_judging.get('provider_attempts', 'not recorded')))} · Usage: {html.escape(str(run.semantic_judging.get('usage', 'not reported')))} · Cost: {html.escape(str(run.semantic_judging.get('provider_cost', 'not reported')))}</p><table><thead><tr><th>Case</th><th>Result</th><th>Confidence</th><th>Rationale</th><th>Answer quote</th><th>Reference quote</th></tr></thead><tbody>{semantic_rows}</tbody></table><p>A single model judgment is fallible; review its grounded quotes. The overall score is calculated by the fixed rubric from persisted scenario outcomes.</p>
 <h2>Scenario inventory</h2><table><thead><tr><th>ID</th><th>Scenario</th><th>Category</th><th>Result</th><th>HTTP</th><th>Limitations</th></tr></thead><tbody>{scenario_rows}</tbody></table>
 <h2>Method and limitations</h2><p>Methodology: {html.escape(run.scoring.get('methodology', ''))}. The score describes only executed checks and is not a universal safety certification.</p>
 <p>Unsupported capabilities: {html.escape(', '.join(run.scoring.get('untested_capabilities', [])))}</p><small>Run {html.escape(run.id)} · {html.escape(run.created_at.isoformat())}</small></body></html>"""
@@ -147,7 +147,8 @@ def generate(run: RunRecord, output_dir: Path) -> dict[str, str]:
     story.extend([table, Spacer(1, 16), Paragraph("Unsupported: " + html.escape(", ".join(run.scoring.get("untested_capabilities", []))), styles["BodyText"])])
     story.append(Paragraph("LLM investigation · hypotheses, not scored facts", styles["Heading2"]))
     story.append(Paragraph("Provider: " + html.escape(str(run.planning.get("provider", "not recorded")))
-        + " · Model: " + html.escape(str(run.planning.get("actual_model", run.planning.get("requested_model", "not recorded")))), styles["BodyText"]))
+        + " · Model: " + html.escape(str(run.planning.get("actual_model", run.planning.get("selected_model", run.planning.get("requested_model", "not recorded")))))
+        + " · Attempts: " + html.escape(str(run.planning.get("provider_attempts", "not recorded"))), styles["BodyText"]))
     if investigation:
         for key, title in investigation_titles.items():
             story.append(Paragraph(html.escape(title), styles["Heading3"]))
@@ -158,7 +159,8 @@ def generate(run: RunRecord, output_dir: Path) -> dict[str, str]:
     story.append(Paragraph("Reference-grounded semantic judgments · fallible model evidence", styles["Heading2"]))
     story.append(Paragraph("Status: " + html.escape(str(run.semantic_judging.get("status", "not requested")))
         + " · Provider: " + html.escape(str(run.semantic_judging.get("provider", "not recorded")))
-        + " · Model: " + html.escape(str(run.semantic_judging.get("actual_model", run.semantic_judging.get("requested_model", "not recorded"))))
+        + " · Model: " + html.escape(str(run.semantic_judging.get("actual_model", run.semantic_judging.get("selected_model", run.semantic_judging.get("requested_model", "not recorded")))))
+        + " · Attempts: " + html.escape(str(run.semantic_judging.get("provider_attempts", "not recorded")))
         + " · Usage: " + html.escape(str(run.semantic_judging.get("usage", "not reported")))
         + " · Cost: " + html.escape(str(run.semantic_judging.get("provider_cost", "not reported"))), styles["BodyText"]))
     if semantic_cases:

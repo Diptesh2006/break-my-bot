@@ -96,15 +96,12 @@ async def judge_answers(cases: list[dict]) -> dict:
     )
     try:
         async with httpx.AsyncClient(timeout=30, follow_redirects=False, trust_env=False) as client:
-            response = await client.post(url, headers={
-                provider["auth_header"]: f"{provider['auth_scheme']} {provider['api_key']}".strip()}, json={
-                    "model": provider["model"],
+            response, selected_model, attempts = await planner.post_chat_completion(client, url, provider, {
                     "messages": [{"role": "system", "content": system},
                                  {"role": "user", "content": input_json}],
                     provider["token_parameter"]: token_budget,
                     "stream": False,
                 })
-            response.raise_for_status()
             if len(response.content) > 1024 * 1024:
                 raise ValueError("semantic judge response exceeds the 1 MiB bound")
             data = response.json()
@@ -126,7 +123,8 @@ async def judge_answers(cases: list[dict]) -> dict:
             validated.append({**judgment.model_dump(), "verdict": verdict,
                 "confidence_threshold": 0.65})
         return {"status": "completed", "provider": provider["name"],
-            "requested_model": provider["model"], "actual_model": data.get("model"),
+            "requested_model": provider["model"], "selected_model": selected_model,
+            "actual_model": data.get("model"), "provider_attempts": attempts,
             "usage": data.get("usage"), "provider_cost": data.get("cost"), "judgments": validated}
     except (httpx.HTTPError, KeyError, TypeError, ValueError, ValidationError):
         return {"status": "error", "provider": provider["name"],

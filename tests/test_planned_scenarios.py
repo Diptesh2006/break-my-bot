@@ -135,6 +135,8 @@ async def test_nrouter_plan_receives_only_execution_allowlists_and_bounds(monkey
     captured = {}
 
     class FakeResponse:
+        status_code = 200
+
         def raise_for_status(self):
             return None
 
@@ -204,6 +206,8 @@ async def test_configurable_openai_compatible_provider_uses_external_key_env(mon
     captured = {}
 
     class FakeResponse:
+        status_code = 200
+
         def raise_for_status(self):
             return None
 
@@ -236,6 +240,64 @@ async def test_configurable_openai_compatible_provider_uses_external_key_env(mon
     assert captured["headers"] == {"x-api-key": "provider-secret-value"}
     assert captured["body"]["max_tokens"] == 6000
     assert "provider-secret-value" not in json.dumps(result)
+
+
+@pytest.mark.asyncio
+async def test_provider_retries_only_transient_http_once():
+    calls = []
+
+    class FakeClient:
+        async def post(self, _url, *, headers, json):
+            calls.append(json["model"])
+            return httpx.Response(503 if len(calls) == 1 else 200,
+                request=httpx.Request("POST", "https://provider.example/v1/chat/completions"), json={"ok": True})
+
+    provider = {"model": "primary", "fallback_model": "fallback", "api_key": "secret",
+        "auth_header": "Authorization", "auth_scheme": "Bearer"}
+    response, model, attempts = await planner.post_chat_completion(
+        FakeClient(), "https://provider.example/v1/chat/completions", provider, {"messages": []})
+    assert response.status_code == 200
+    assert model == "primary"
+    assert attempts == 2
+    assert calls == ["primary", "primary"]
+
+
+@pytest.mark.asyncio
+async def test_provider_uses_fallback_only_when_primary_model_is_not_found():
+    calls = []
+
+    class FakeClient:
+        async def post(self, _url, *, headers, json):
+            calls.append(json["model"])
+            return httpx.Response(404 if len(calls) == 1 else 200,
+                request=httpx.Request("POST", "https://provider.example/v1/chat/completions"), json={"ok": True})
+
+    provider = {"model": "primary", "fallback_model": "fallback", "api_key": "secret",
+        "auth_header": "Authorization", "auth_scheme": "Bearer"}
+    response, model, attempts = await planner.post_chat_completion(
+        FakeClient(), "https://provider.example/v1/chat/completions", provider, {"messages": []})
+    assert response.status_code == 200
+    assert calls == ["primary", "fallback"]
+    assert model == "fallback"
+    assert attempts == 2
+
+
+@pytest.mark.asyncio
+async def test_provider_does_not_retry_ambiguous_network_timeout():
+    calls = 0
+
+    class FakeClient:
+        async def post(self, *_args, **_kwargs):
+            nonlocal calls
+            calls += 1
+            raise httpx.ReadTimeout("provider response timed out")
+
+    provider = {"model": "primary", "fallback_model": "fallback", "api_key": "secret",
+        "auth_header": "Authorization", "auth_scheme": "Bearer"}
+    with pytest.raises(httpx.ReadTimeout):
+        await planner.post_chat_completion(FakeClient(), "https://provider.example/v1/chat/completions",
+            provider, {"messages": []})
+    assert calls == 1
 
 
 @pytest.mark.asyncio

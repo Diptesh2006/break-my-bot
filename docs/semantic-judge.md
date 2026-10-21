@@ -1,10 +1,10 @@
 # Built-in semantic judge
 
-BreakMyBot can run reference-grounded semantic evaluations without MemoryScope. Supply 1–20 operator-authored cases; each case makes one additional request to the selected target endpoint, and all eligible answers are evaluated in one bounded LLM call. This is separate from the investigator/planner and is opt-in per run.
+BreakMyBot can run reference-grounded semantic evaluations without MemoryScope. Supply 1–20 operator-authored cases; each case makes one additional request to the selected target endpoint, and eligible answers are evaluated in one bounded batched LLM operation. This is separate from the investigator/planner and is opt-in per run.
 
 ## Configure and run
 
-Configure a provider key and model in both API and worker environments. The judge uses `BREAKMYBOT_JUDGE_MODEL` when set, otherwise it shares the planner model. The default provider is nRouter; other supported providers use the same OpenAI-compatible configuration described in [`.env.example`](../.env.example). `BREAKMYBOT_JUDGE_TOKEN_BUDGET` bounds the completion tokens for the single batch call (default 2048, maximum 6000).
+Configure a provider key and model in both API and worker environments. The judge uses `BREAKMYBOT_JUDGE_MODEL` when set, otherwise it shares the planner model. The default provider is nRouter; other supported providers use the same OpenAI-compatible configuration described in [`.env.example`](../.env.example). `BREAKMYBOT_JUDGE_TOKEN_BUDGET` bounds completion tokens (default 2048, maximum 6000). An optional `BREAKMYBOT_JUDGE_FALLBACK_MODEL` or shared `BREAKMYBOT_LLM_FALLBACK_MODEL` can name a same-provider fallback.
 
 Create a case file:
 
@@ -34,7 +34,7 @@ Each case reuses the selected method, endpoint, and target authentication. Non-G
 ## Interpretation and safeguards
 
 - Required/forbidden literal checks run first. A deterministic mismatch is reported as a failure and is not sent to the model.
-- Eligible answers are sent together in one provider request, bounded to 256 KiB of judge input and a configurable completion-token budget. There are no automatic retries.
+- Eligible answers are sent together in one batched provider operation, bounded to 256 KiB of judge input and a configurable completion-token budget. Explicit transient HTTP statuses (429/5xx) receive at most one retry per model after a short backoff. A configured fallback model is tried only when the primary returns HTTP 404, for at most three HTTP requests total. Network/timeouts are not retried because provider processing or billing may be ambiguous. Reports record selected model and successful-operation attempt count.
 - The structured response must include exactly one judgment per case. Pass/fail requires verbatim quotes that are checked against the recorded answer and approved reference. Invalid, missing, duplicate, or ungrounded judgments become setup errors, never passes.
 - Judgments below 0.65 confidence become inconclusive. The model cannot set the aggregate score; the fixed scoring rubric consumes persisted scenario states and continues to report coverage separately.
 - Reports include provider/model, usage/cost when returned, confidence, rationale, and grounded quotes. Treat judgments as fallible and review them before acting; this is not a legal, financial, security, or safety certification.

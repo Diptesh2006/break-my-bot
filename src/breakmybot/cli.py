@@ -213,8 +213,9 @@ def test(
             console.print("No semantic judge key/model is configured; continuing without semantic judgments.")
         elif Confirm.ask(
             f"Send each case's question, approved reference, expected behavior, and redacted target answer to "
-            f"{planner.configured_provider_name()} / {planner.configured_model_name('judge')} "
-            "for one batched semantic judgment? Consent?", default=False):
+            f"{planner.configured_provider_name()} / {planner.configured_model_description('judge')} "
+            "for one batched semantic judgment? At most 3 provider requests are possible: one retry for explicit "
+            "transient HTTP statuses and fallback-model use only after primary HTTP 404. Consent?", default=False):
             semantic_judge = validated_judge.model_dump(mode="json")
             semantic_judge_consent = True
         else:
@@ -258,7 +259,8 @@ def test(
             console.print("No complete AI provider key/model configuration is available; continuing with deterministic checks.")
             plan_with_nrouter = False
         elif not Confirm.ask(
-            f"Send bounded target API metadata and baseline behavior to {planner.configured_provider_name()} for investigation and scenario planning? "
+            f"Send bounded target API metadata and baseline behavior to {planner.configured_provider_name()} / "
+            f"{planner.configured_model_description()} for investigation and scenario planning? "
             "This includes endpoint schemas/descriptions, payload field names, and baseline status/latency/content type/size, but not payload values or response text. "
             "When generated execution is enabled, the approved tool/fault pairs and response oracles are also sent.",
             default=False,

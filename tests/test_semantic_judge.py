@@ -23,6 +23,7 @@ def _configured_provider(monkeypatch):
     monkeypatch.setenv("NROUTER_BASE_URL", "https://provider.example/v1")
     monkeypatch.setenv("BREAKMYBOT_PLANNER_MODEL", "planner-model")
     monkeypatch.setenv("BREAKMYBOT_JUDGE_MODEL", "judge-model")
+    monkeypatch.setenv("BREAKMYBOT_JUDGE_FALLBACK_MODEL", "judge-fallback")
 
 
 @pytest.mark.asyncio
@@ -101,6 +102,7 @@ def test_provider_status_exposes_judge_readiness_without_credentials(monkeypatch
     status = public_provider_status()
     assert status["judge_configured"] is True
     assert status["judge_model"] == "judge-model"
+    assert status["judge_fallback_model"] == "judge-fallback"
     assert "judge-provider-secret" not in json.dumps(status)
 
 
