@@ -454,6 +454,31 @@ def test_report_outputs_are_portable_and_include_limitations(tmp_path: Path):
     assert "http://localhost:8000/chat" in Path(paths["html"]).read_text(encoding="utf-8")
 
 
+def test_verified_failure_report_contains_expected_actual_reproduction_and_remediation(tmp_path: Path):
+    run = RunRecord(target_url="http://localhost:8000", endpoint_path="/api/chat", method="POST",
+        profile="quick", application_name="Isolated support demo",
+        request_payload={"api_key": "[REDACTED]", "message": "refund policy"})
+    run.scenarios = [ScenarioResult(scenario_id="instrumented-tool-1", name="Refund tool timeout",
+        category="Tool reliability", status="VERIFIED_FAILURE", severity="high", http_status=200,
+        evidence={"faults": [{"tool": "refund_policy", "kind": "timeout"}],
+            "fault_injected": True, "cleanup_succeeded": True,
+            "response_excerpt": "Your refund is guaranteed for any purchase date.",
+            "expected_substring_passed": False})]
+    run.scoring = calculate(run)
+
+    paths = generate(run, tmp_path)
+    html_report = Path(paths["html"]).read_text(encoding="utf-8")
+    json_report = json.loads(Path(paths["json"]).read_text(encoding="utf-8"))
+    assert "Expected behavior" in html_report
+    assert "Actual observation" in html_report
+    assert "Ordered fault sequence" in html_report
+    assert "idempotency protection" in html_report
+    assert "Your refund is guaranteed" in html_report
+    assert "[REDACTED]" in html_report
+    assert 'api_key&quot;: &quot;[REDACTED]' in html_report
+    assert json_report["scenarios"][0]["evidence"]["fault_injected"] is True
+
+
 @pytest.mark.asyncio
 async def test_api_root_points_to_bundled_dashboard_and_health_routes():
     async with AsyncClient(transport=ASGITransport(app=api_app), base_url="http://test") as client:

@@ -13,6 +13,44 @@ from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer, Table, Tabl
 from .models import RunRecord
 
 
+def _finding_expectation(scenario) -> str:
+    evidence = scenario.evidence
+    if evidence.get("expected_substring_passed") is False:
+        return "The response should contain the configured expected substring."
+    if evidence.get("matched") is False:
+        expected = evidence.get("expected_substring")
+        return f"The response should satisfy the configured literal invariant: {expected}." if expected else "The configured response invariant should hold."
+    if evidence.get("fault_injected"):
+        return "The agent should preserve its declared safe behavior under the confirmed tool fault."
+    if evidence.get("assertion"):
+        return str(evidence["assertion"])
+    return "No explicit expected-behavior invariant was recorded; interpret this observation within the stated scenario scope."
+
+
+def _finding_recommendation(scenario) -> str:
+    return {
+        "HTTP reliability": "Inspect target availability, request handling, and safe timeout/retry behavior; add a regression test for this observed response.",
+        "Response validity": "Return a response matching the declared content type and response contract, and cover the malformed case with a regression test.",
+        "Latency": "Profile the affected path and define a latency budget consistent with user-facing requirements.",
+        "Output correctness": "Correct the response against the supplied invariant or reference, then add the case to the target application's regression suite.",
+        "Tool reliability": "Handle the confirmed dependency fault with a safe fallback, bounded retry policy, and idempotency protection where actions may repeat.",
+        "Memory integrity": "Review the observed memory state and retrieval/update policy, then add a resettable regression fixture.",
+        "Security": "Review the violated boundary and enforce it at the application authorization layer; add a negative authorization regression test.",
+    }.get(scenario.category, "Review the recorded observation and add a focused regression test for the affected behavior.")
+
+
+def _finding_reproduction(run: RunRecord, endpoint: str, scenario) -> str:
+    steps = [f"1. Use the isolated target endpoint: {run.method} {endpoint}.",
+        f"2. Send the recorded redacted payload: {json.dumps(run.request_payload, ensure_ascii=False)}."]
+    faults = scenario.evidence.get("faults")
+    if faults:
+        steps.append(f"3. Ordered fault sequence: configure the target's opt-in BreakMyBot adapter with {json.dumps(faults, ensure_ascii=False)}.")
+    else:
+        steps.append("3. Repeat only under the same isolated target conditions; no internal fault injection was recorded for this scenario.")
+    steps.append(f"4. Compare the observed response with the invariant: {_finding_expectation(scenario)}")
+    return " ".join(steps)
+
+
 def generate(run: RunRecord, output_dir: Path) -> dict[str, str]:
     output_dir.mkdir(parents=True, exist_ok=True)
     json_path = output_dir / "report.json"
@@ -30,7 +68,7 @@ def generate(run: RunRecord, output_dir: Path) -> dict[str, str]:
         for name, item in run.scoring.get("category_scores", {}).items()
     ) or "<tr><td colspan='4'>No category has enough conclusive observations yet.</td></tr>"
     finding_rows = "".join(
-        f"<article><h3>{html.escape(s.name)} · {html.escape(s.severity)}</h3><p>Category: {html.escape(s.category)}. Scenario: {html.escape(s.scenario_id)}.</p><p>Observed status: {html.escape(str(s.http_status or 'No HTTP response'))}. Duration: {html.escape(str(s.duration_ms or 'N/A'))} ms.</p><p>Evidence: {html.escape(json.dumps(s.evidence, ensure_ascii=False))}</p><p>Reproduction request: {html.escape(run.method)} {html.escape(target_endpoint)} with payload <code>{html.escape(json.dumps(run.request_payload, ensure_ascii=False))}</code>. Credential-like fields are redacted in stored evidence. Repeat only in an isolated, resettable test environment.</p></article>"
+        f"<article><h3>{html.escape(s.name)} · {html.escape(s.severity)}</h3><p>Category: {html.escape(s.category)}. Scenario: {html.escape(s.scenario_id)}.</p><p>Expected behavior: {html.escape(_finding_expectation(s))}</p><p>Actual observation: HTTP {html.escape(str(s.http_status or 'not available'))}; {html.escape(str(s.duration_ms or 'N/A'))} ms; response evidence: <code>{html.escape(str(s.evidence.get('response_excerpt', 'No response excerpt recorded.')))}</code>.</p><p>Evidence: {html.escape(json.dumps(s.evidence, ensure_ascii=False))}</p><p>Reproduction: {html.escape(_finding_reproduction(run, target_endpoint, s))}</p><p>Recommended remediation: {html.escape(_finding_recommendation(s))}</p><p>Repeat only in an isolated, resettable test environment. Credential-like fields are redacted.</p></article>"
         for s in run.scenarios if s.status == "VERIFIED_FAILURE"
     ) or "<p>No verified failures were observed in the executed scenarios.</p>"
     plan_rows = "".join(
@@ -83,7 +121,10 @@ def generate(run: RunRecord, output_dir: Path) -> dict[str, str]:
         story.append(Paragraph("Verified findings", styles["Heading2"]))
         for item in failed:
             story.extend([Paragraph(html.escape(f"{item.name} — {item.severity}"), styles["Heading3"]),
-                          Paragraph("Reproduction: " + html.escape(f"{run.method} {target_endpoint} with request payload {json.dumps(run.request_payload, ensure_ascii=False)}"), styles["BodyText"]),
-                          Paragraph(html.escape(json.dumps(item.evidence, ensure_ascii=False)[:1500]), styles["BodyText"])])
+                          Paragraph("Expected behavior: " + html.escape(_finding_expectation(item)), styles["BodyText"]),
+                          Paragraph("Actual observation: " + html.escape(str(item.evidence.get("response_excerpt", item.limitation or "No response excerpt recorded.")))[:1500], styles["BodyText"]),
+                          Paragraph("Reproduction: " + html.escape(_finding_reproduction(run, target_endpoint, item)), styles["BodyText"]),
+                          Paragraph("Recommended remediation: " + html.escape(_finding_recommendation(item)), styles["BodyText"]),
+                          Paragraph("Recorded evidence: " + html.escape(json.dumps(item.evidence, ensure_ascii=False)[:1500]), styles["BodyText"])])
     SimpleDocTemplate(str(pdf_path), pagesize=letter, title=f"BreakMyBot {run.id}").build(story)
     return {"json": str(json_path), "html": str(html_path), "pdf": str(pdf_path)}
