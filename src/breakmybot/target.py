@@ -285,6 +285,7 @@ def identify_endpoints(spec: dict) -> list[EndpointCandidate]:
                 candidates.append(EndpointCandidate(method=method, path=path,
                     description=operation.get("summary", operation.get("description", "")),
                     score=score, payload_template=payload_from_operation(spec, operation),
+                    request_schema=(json_schema if isinstance(json_schema, dict) else {}),
                     response_schemas=response_schemas, streaming=streaming))
     return sorted(candidates, key=lambda item: (-item.score, item.path))
 

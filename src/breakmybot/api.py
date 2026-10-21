@@ -11,7 +11,7 @@ from fastapi import FastAPI, HTTPException, Query
 from fastapi.responses import FileResponse, HTMLResponse, StreamingResponse
 from dotenv import load_dotenv
 
-from . import runner, scoring, store
+from . import planner, runner, scoring, store
 from .models import DiscoveryRequest, ProjectCreate, ProjectRecord, RunAccepted, RunRecord, RunRequest
 from .target import discover, preflight
 from .redaction import redact_payload
@@ -70,6 +70,11 @@ def health():
     storage = "postgresql" if os.getenv("BREAKMYBOT_DATABASE_URL", "").strip() else "sqlite"
     return {"status": "ok", "product": "BreakMyBot", "storage": storage,
             "execution": f"{storage}-worker-queue"}
+
+
+@app.get("/api/planner/status")
+def planner_status():
+    return planner.public_provider_status()
 
 
 @app.post("/api/targets/discover")

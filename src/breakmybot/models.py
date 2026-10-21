@@ -36,6 +36,7 @@ class EndpointCandidate(BaseModel):
     description: str = ""
     score: int = 0
     payload_template: dict[str, Any] = Field(default_factory=dict)
+    request_schema: dict[str, Any] = Field(default_factory=dict)
     response_schemas: dict[str, dict[str, Any]] = Field(default_factory=dict)
     streaming: bool = False
 
@@ -151,6 +152,7 @@ class DiscoveryResult(BaseModel):
     reachable: bool
     openapi_found: bool = False
     application_name: str | None = None
+    target_context: dict[str, Any] = Field(default_factory=dict)
     endpoints: list[EndpointCandidate] = Field(default_factory=list)
     health_endpoints: list[str] = Field(default_factory=list)
     diagnostics: list[str] = Field(default_factory=list)
@@ -164,6 +166,7 @@ class RunRequest(BaseModel):
     payload: dict[str, Any] = Field(default_factory=dict)
     profile: Literal["quick", "standard", "deep"] = "standard"
     application_name: str | None = None
+    target_context: dict[str, Any] = Field(default_factory=dict)
     expected_substring: str | None = None
     allow_repeated_post: bool = False
     concurrency_requests: int = Field(default=0, ge=0, le=5)
@@ -181,6 +184,13 @@ class RunRequest(BaseModel):
     execute_approved_instrumented_scenarios: bool = True
     planner_token_budget: int = Field(default=6000, ge=256, le=6000)
     max_latency_seconds: float = Field(default=10, gt=0, le=120)
+
+    @field_validator("target_context")
+    @classmethod
+    def bound_target_context(cls, value: dict[str, Any]) -> dict[str, Any]:
+        if len(json.dumps(value, ensure_ascii=False).encode("utf-8")) > 32768:
+            raise ValueError("target context must not exceed 32 KiB")
+        return value
 
     @model_validator(mode="after")
     def validate_planned_execution_opt_in(self):

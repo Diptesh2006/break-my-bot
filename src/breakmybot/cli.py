@@ -71,8 +71,10 @@ def test(
     memory_control_auth_env: str = typer.Option("BREAKMYBOT_MEMORY_TOKEN", "--memory-control-auth-env", help="Environment variable containing the target memory-control token"),
     instrumented_faults: Path | None = typer.Option(None, "--instrumented-faults", help="JSON file of opt-in tool fault scenarios"),
     instrumentation_auth_env: str = typer.Option("BREAKMYBOT_INSTRUMENTATION_TOKEN", "--instrumentation-auth-env", help="Environment variable containing the target instrumentation control token"),
-    plan_with_nrouter: bool = typer.Option(False, "--plan-with-ai", "--plan-with-nrouter",
-        help="Opt in to send endpoint metadata to the configured AI provider (nRouter by default)"),
+    plan_with_nrouter: bool = typer.Option(True, "--plan-with-ai", "--plan-with-nrouter",
+        help="Use configured AI investigation/planning after explicit consent (nRouter by default)"),
+    no_plan_with_ai: bool = typer.Option(False, "--no-plan-with-ai",
+        help="Skip AI investigation and use deterministic checks only"),
     execute_planned_scenarios: bool = typer.Option(False, "--execute-planned-scenarios",
         help="Explicitly authorize bounded AI-proposed faults from the supplied instrumentation allowlist"),
     max_planned_scenarios: int = typer.Option(3, "--max-planned-scenarios", min=1, max=5,
@@ -227,13 +229,19 @@ def test(
         if Confirm.ask("Seed the target's real memory for these approved scenarios and attempt restoration after each test? The target may have side effects.", default=False):
             instrumented_memory_assessment = validated.model_dump(mode="json")
             execute_memory_scenarios = True
-    if plan_with_nrouter and not Confirm.ask(
-        f"Send target name, endpoint/method and payload field names to {planner.configured_provider_name()} for scenario planning? "
-        "After baseline, HTTP status, latency, content type, response size, and contract outcome are also sent (not response text or payload values). "
-        "When generated execution is enabled, the approved tool/fault pairs and response oracles are also sent.",
-        default=False,
-    ):
+    if no_plan_with_ai:
         plan_with_nrouter = False
+    if plan_with_nrouter:
+        if not planner.provider_credentials_configured():
+            console.print("No complete AI provider key/model configuration is available; continuing with deterministic checks.")
+            plan_with_nrouter = False
+        elif not Confirm.ask(
+            f"Send bounded target API metadata and baseline behavior to {planner.configured_provider_name()} for investigation and scenario planning? "
+            "This includes endpoint schemas/descriptions, payload field names, and baseline status/latency/content type/size, but not payload values or response text. "
+            "When generated execution is enabled, the approved tool/fault pairs and response oracles are also sent.",
+            default=False,
+        ):
+            plan_with_nrouter = False
     if execute_planned_scenarios:
         if not plan_with_nrouter:
             raise typer.BadParameter("--execute-planned-scenarios requires --plan-with-ai (or --plan-with-nrouter) and its consent")
@@ -247,8 +255,20 @@ def test(
             default=False,
         ):
             execute_planned_scenarios = False
+    target_context = {}
+    if selected:
+        target_context = {"openapi_found": discovered.get("openapi_found", False),
+            "endpoint_description": selected.get("description", "")[:1000],
+            "request_schema": selected.get("request_schema", {}),
+            "response_schemas": selected.get("response_schemas", {}),
+            "streaming": bool(selected.get("streaming")),
+            "health_endpoints": discovered.get("health_endpoints", [])[:10]}
+        if len(json.dumps(target_context, ensure_ascii=False).encode("utf-8")) > 30000:
+            target_context["request_schema"] = {}
+            target_context["response_schemas"] = {}
     created = api_request("POST", "/api/runs", json={"target_url": url, "endpoint_path": endpoint,
         "method": method, "payload": payload, "profile": profile, "application_name": discovered.get("application_name"),
+        "target_context": target_context,
         "expected_substring": expected, "allow_repeated_post": allow_repeated_post,
         "concurrency_requests": concurrency_requests, "auth_env": auth_env,
         "memory_assessment": memory_assessment, "instrumented_assessment": instrumented_assessment,
@@ -274,6 +294,13 @@ def test(
     executed_plans = sum(bool(item.get("executed")) for item in run.get("planning", {}).get("scenarios", []))
     execution_note = f"{executed_plans} generated scenarios executed" if execute_planned_scenarios else "proposals not executed"
     console.print(f"Scenario planner: {run.get('planning', {}).get('status', 'not requested')} ({len(run.get('planning', {}).get('scenarios', []))} proposals; {execution_note})")
+    investigation = run.get("planning", {}).get("investigation", {})
+    for item in investigation.get("observed_facts", [])[:5]:
+        console.print(f"  Observed: {item}")
+    for item in investigation.get("inferred_dependencies", [])[:5]:
+        console.print(f"  Hypothesis: {item}")
+    for item in investigation.get("coverage_gaps", [])[:5]:
+        console.print(f"  Coverage gap: {item}")
     counts = run["scoring"]["scenario_counts"]
     console.print(f"Passed: {counts['PASSED']} | Failed: {counts['VERIFIED_FAILURE']} | Unsupported: {counts['UNSUPPORTED']}")
     console.print(run["scoring"]["warning"])

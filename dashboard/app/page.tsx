@@ -3,9 +3,11 @@
 import { FormEvent, useCallback, useEffect, useState } from "react";
 
 type Scenario = { scenario_id: string; name: string; category: string; status: string; severity: string; evidence: Record<string, unknown>; limitation?: string | null };
-type Run = { id: string; project_id?: string | null; status: string; target_url: string; endpoint_path: string; application_name?: string | null; created_at: string; scoring: { overall_score: number | null; coverage_percent: number; observed_weight_percent: number; critical_findings: number; scenario_counts: Record<string, number>; category_scores: Record<string, { score: number | null; coverage_percent: number; conclusive: number }> }; scenarios: Scenario[]; report_paths?: Record<string, string> };
+type Investigation = { observed_facts: string[]; inferred_dependencies: string[]; failure_sensitive_operations: string[]; candidate_invariants: string[]; coverage_gaps: string[] };
+type Run = { id: string; project_id?: string | null; status: string; target_url: string; endpoint_path: string; application_name?: string | null; created_at: string; planning?: { status?: string; provider?: string; actual_model?: string; investigation?: Investigation }; scoring: { overall_score: number | null; coverage_percent: number; observed_weight_percent: number; critical_findings: number; scenario_counts: Record<string, number>; category_scores: Record<string, { score: number | null; coverage_percent: number; conclusive: number }> }; scenarios: Scenario[]; report_paths?: Record<string, string> };
 type Project = { id: string; name: string; target_url: string; created_at: string };
-type Discovery = { reachable: boolean; openapi_found: boolean; application_name?: string; endpoints: Array<{ method: string; path: string; payload_template: Record<string, unknown> }>; diagnostics: string[] };
+type Discovery = { reachable: boolean; openapi_found: boolean; application_name?: string; endpoints: Array<{ method: string; path: string; description?: string; request_schema?: Record<string, unknown>; response_schemas?: Record<string, unknown>; streaming?: boolean; payload_template: Record<string, unknown> }>; diagnostics: string[] };
+type PlannerStatus = { provider: string; model: string; configured: boolean };
 type LiveEvent = { type: string; scenario_id?: string; name?: string; category?: string; status?: string; phase?: string; completed_scenarios?: number; evidence?: Record<string, unknown> };
 
 async function api<T>(path: string, init?: RequestInit): Promise<T> {
@@ -41,19 +43,25 @@ export default function Home() {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [health, setHealth] = useState("Connecting to API…");
+  const [plannerStatus, setPlannerStatus] = useState<PlannerStatus | null>(null);
+  const [aiPlannerEnabled, setAiPlannerEnabled] = useState(false);
+  const [plannerPreferenceInitialized, setPlannerPreferenceInitialized] = useState(false);
 
   const refresh = useCallback(async () => {
     try {
       const query = selectedProjectId ? `&project_id=${encodeURIComponent(selectedProjectId)}` : "";
-      const [healthResult, recent, savedProjects] = await Promise.all([api<{ status: string }>("/api/health"), api<Run[]>(`/api/runs?limit=12${query}`), api<Project[]>("/api/projects")]);
+      const [healthResult, recent, savedProjects, provider] = await Promise.all([api<{ status: string }>("/api/health"), api<Run[]>(`/api/runs?limit=12${query}`), api<Project[]>("/api/projects"), api<PlannerStatus>("/api/planner/status")]);
       setHealth(healthResult.status === "ok" ? "API online" : "API unavailable");
       setRuns(recent);
       setProjects(savedProjects);
+      setPlannerStatus(provider);
+      if (!plannerPreferenceInitialized) setAiPlannerEnabled(provider.configured);
+      setPlannerPreferenceInitialized(true);
     } catch (e) {
       setHealth("API unavailable");
       setError(e instanceof Error ? e.message : "Could not connect to BreakMyBot API");
     }
-  }, [selectedProjectId]);
+  }, [plannerPreferenceInitialized, selectedProjectId]);
 
   useEffect(() => { void refresh(); }, [refresh]);
 
@@ -92,9 +100,11 @@ export default function Home() {
     let parsed: Record<string, unknown>;
     try { parsed = JSON.parse(payload); } catch { setError("Request JSON is invalid."); return; }
     if (method !== "GET" && !window.confirm("Confirm this test invocation is safe and will not cause unwanted side effects.")) return;
+    const selectedEndpoint = discovery?.endpoints.find((item) => item.method === method && item.path === endpoint);
+    const useAi = Boolean(aiPlannerEnabled && plannerStatus?.configured && window.confirm(`Use ${plannerStatus.provider} for AI investigation and scenario planning? Endpoint schemas/descriptions, payload field names, and baseline status/latency/content-type/size will be sent; payload values and response text will not. AI findings are hypotheses, not scored facts.`));
     setBusy(true); setRun(null); setEvents([]); setLiveScenarios([]); setPhase("QUEUED"); setActiveScenario("Waiting for worker");
     try {
-      const created = await api<{ run_id: string }>("/api/runs", { method: "POST", body: JSON.stringify({ target_url: url, project_id: selectedProjectId || null, endpoint_path: endpoint, method, payload: parsed, profile, expected_substring: expected || null, allow_repeated_post: false, auth_env: authEnv || null, auth_header: authHeader, auth_scheme: authScheme }) });
+      const created = await api<{ run_id: string }>("/api/runs", { method: "POST", body: JSON.stringify({ target_url: url, project_id: selectedProjectId || null, endpoint_path: endpoint, method, payload: parsed, profile, expected_substring: expected || null, allow_repeated_post: false, auth_env: authEnv || null, auth_header: authHeader, auth_scheme: authScheme, use_nrouter_planner: useAi, target_context: selectedEndpoint ? { openapi_found: discovery?.openapi_found, endpoint_description: selectedEndpoint.description || "", request_schema: selectedEndpoint.request_schema || {}, response_schemas: selectedEndpoint.response_schemas || {}, streaming: Boolean(selectedEndpoint.streaming) } : {} }) });
       setRun(await api<Run>(`/api/runs/${encodeURIComponent(created.run_id)}`));
       const stream = new EventSource(`/api/runs/${encodeURIComponent(created.run_id)}/events`);
       const receive = (type: string) => (message: Event) => {
@@ -152,6 +162,7 @@ export default function Home() {
             <label htmlFor="payload">Request JSON</label><textarea id="payload" value={payload} onChange={(e) => setPayload(e.target.value)} spellCheck={false} rows={7} />
             <details className="auth-config"><summary>Authentication <span className="optional">OPTIONAL · SERVER ENVIRONMENT ONLY</span></summary><p>Store the token in BreakMyBot’s <code>.env</code>; enter its variable name here. The secret is never sent through the browser.</p><label htmlFor="auth-env">Credential environment variable</label><input id="auth-env" value={authEnv} onChange={(e) => setAuthEnv(e.target.value)} placeholder="TARGET_API_TOKEN" autoComplete="off" /><div className="two-col"><div><label htmlFor="auth-header">Header name</label><input id="auth-header" value={authHeader} onChange={(e) => setAuthHeader(e.target.value)} /></div><div><label htmlFor="auth-scheme">Scheme</label><input id="auth-scheme" value={authScheme} onChange={(e) => setAuthScheme(e.target.value)} placeholder="Bearer" /></div></div></details>
             <div className="two-col"><div><label htmlFor="profile">Assessment profile</label><select id="profile" value={profile} onChange={(e) => setProfile(e.target.value)}><option value="quick">Quick scan</option><option value="standard">Standard</option><option value="deep">Deep</option></select></div><div><label htmlFor="expected">Expected response text <span className="optional">OPTIONAL</span></label><input id="expected" value={expected} onChange={(e) => setExpected(e.target.value)} placeholder="e.g. contact support" /></div></div>
+            <label className="ai-option"><input type="checkbox" checked={aiPlannerEnabled} disabled={!plannerStatus?.configured} onChange={(e) => setAiPlannerEnabled(e.target.checked)} /><span><b>LLM investigator + scenario planner</b><small>{plannerStatus?.configured ? `${plannerStatus.provider} · ${plannerStatus.model} · consent requested per run` : "Configure a provider key and model in the API and worker environments to enable"}</small></span></label>
             <div className="safety-note"><span>!</span><p>Only assess systems you are authorized to test. POST calls are sent once by default; repeated calls require separate CLI authorization.</p></div>
             <button className="button primary start-button" type="submit" disabled={busy}>{busy ? <><span className="spinner" /> Assessment running…</> : "Start assessment  →"}</button>
             {busy && run && <button className="button danger" type="button" onClick={cancel}>Cancel run</button>}
@@ -166,6 +177,7 @@ export default function Home() {
         <div className="score-strip"><div className="score-main"><small>OBSERVED RELIABILITY</small><strong>{run.scoring.overall_score == null ? "Not established" : `${run.scoring.overall_score}/100`}</strong></div><div className="score-metric"><small>SCENARIO COVERAGE</small><strong>{run.scoring.coverage_percent}%</strong></div><div className="score-metric"><small>RUBRIC WEIGHT OBSERVED</small><strong>{run.scoring.observed_weight_percent}%</strong></div><div className="score-metric"><small>CRITICAL FINDINGS</small><strong>{run.scoring.critical_findings}</strong></div></div>
         <div className="count-strip"><span><i className="count-pass" />{counts?.PASSED ?? 0} passed</span><span><i className="count-fail" />{counts?.VERIFIED_FAILURE ?? 0} verified failures</span><span><i className="count-other" />{counts?.UNSUPPORTED ?? 0} unsupported</span></div>
         <div className="category-grid">{Object.entries(run.scoring.category_scores).map(([name, item]) => <div className="category-card" key={name}><div><b>{name}</b><span>{item.coverage_percent}% covered</span></div><strong>{item.score == null ? "—" : `${item.score}`}</strong></div>)}</div>
+        {run.planning?.investigation && <section className="investigation"><div className="eyebrow">LLM INVESTIGATION · {run.planning.provider || "provider"}{run.planning.actual_model ? ` / ${run.planning.actual_model}` : ""}</div><p className="scope-foot">Probabilistic hypotheses for engineering review; not observed facts and not included in scoring.</p><div className="investigation-grid">{([ ["Observed context", run.planning.investigation.observed_facts], ["Inferred dependencies", run.planning.investigation.inferred_dependencies], ["Failure-sensitive operations", run.planning.investigation.failure_sensitive_operations], ["Candidate invariants", run.planning.investigation.candidate_invariants], ["Coverage gaps", run.planning.investigation.coverage_gaps] ] as [string, string[]][]).map(([title, items]) => <div key={title}><b>{title}</b>{items.length ? <ul>{items.map((item, index) => <li key={`${title}-${index}`}>{item}</li>)}</ul> : <small>No findings returned.</small>}</div>)}</div></section>}
         <h3 className="subhead">Scenario evidence</h3><div className="scenario-list">{run.scenarios.map((scenario) => <details className="scenario-row" key={scenario.scenario_id}><summary><span className="scenario-state" data-status={scenario.status}>{scenario.status.replaceAll("_", " ")}</span><b>{scenario.name}</b><span className="scenario-category">{scenario.category}</span></summary><div className="evidence"><p>{scenario.limitation || "Observed from target response and execution evidence."}</p><pre>{JSON.stringify(scenario.evidence, null, 2)}</pre></div></details>)}</div>
         <section className="live-progress" aria-live="polite"><div className="live-progress-head"><h3 className="subhead">Live execution</h3><span>{phase || run.status}</span></div>{activeScenario && <p className="active-scenario"><span className="spinner" />{activeScenario}</p>}<div className="live-scenario-list">{liveScenarios.map((item) => <div className="live-scenario" key={item.scenario_id}><span className="scenario-state" data-status={item.status}>{item.status?.replaceAll("_", " ")}</span><b>{item.name}</b>{item.evidence?.fault_injected === true && <small>Fault confirmed{item.evidence.cleanup_succeeded === true ? " · cleanup confirmed" : " · cleanup not confirmed"}</small>}</div>)}</div></section>
         <details className="live-events"><summary>Execution events <span>{events.length || "open for persisted history"}</span></summary><pre>{events.length ? events.map((item) => JSON.stringify(item)).join("\n") : "Run events are persisted and available via the API event stream."}</pre></details>
