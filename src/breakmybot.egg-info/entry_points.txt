@@ -1,0 +1,2 @@
+[console_scripts]
+breakmybot = breakmybot.cli:app
