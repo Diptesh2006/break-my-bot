@@ -29,6 +29,9 @@ docker compose up -d --build
 The API is at `http://127.0.0.1:8000`; the dashboard is at `http://127.0.0.1:3000`. Configure a provider in the API and worker environments to enable LLM features. Then test an AI application you control:
 
 ```powershell
+python -m venv .venv
+.\.venv\Scripts\Activate.ps1
+python -m pip install -e .
 breakmybot test --url http://localhost:8000
 ```
 
