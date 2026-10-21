@@ -19,13 +19,11 @@ load_dotenv(Path.cwd() / ".env")
 
 @asynccontextmanager
 async def lifespan(_app):
-    store.recover_interrupted()
+    store.requeue_stale_jobs()
     yield
 
 
 app = FastAPI(title="BreakMyBot API", version="0.1.0", description="Evidence-based AI application reliability assessments", lifespan=lifespan)
-_tasks: dict[str, asyncio.Task] = {}
-_cancel_events: dict[str, asyncio.Event] = {}
 
 
 @app.get("/", response_class=HTMLResponse)
@@ -86,9 +84,7 @@ async def create_run(request: RunRequest):
         application_name=request.application_name, profile=request.profile)
     store.save(record)
     store.append_event(record.id, {"type": "run.created", "phase": "CREATED"})
-    cancel = asyncio.Event()
-    _cancel_events[record.id] = cancel
-    _tasks[record.id] = asyncio.create_task(runner.execute(record.id, request, cancel))
+    store.enqueue(record.id, request.model_dump(mode="json"))
     return RunAccepted(run_id=record.id, status="CREATED", status_url=f"/api/runs/{record.id}")
 
 
@@ -118,10 +114,7 @@ def cancel_run(run_id: str):
         raise HTTPException(404, "Run not found")
     if run.status not in {"CREATED", "RUNNING"}:
         raise HTTPException(409, "Run is already terminal")
-    event = _cancel_events.get(run_id)
-    if event:
-        event.set()
-    return {"run_id": run_id, "cancellation_requested": True}
+    return {"run_id": run_id, "cancellation_requested": store.cancel_job(run_id)}
 
 
 @app.get("/api/runs/{run_id}/events")

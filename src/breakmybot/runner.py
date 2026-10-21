@@ -154,6 +154,12 @@ async def execute(run_id: str, request: RunRequest, cancel: asyncio.Event | None
     store.save(run)
     store.append_event(run.id, {"type": "run.started", "phase": "DISCOVERING"})
     try:
+        if cancel and cancel.is_set():
+            run.status = "CANCELLED"
+            run.completed_at = datetime.now(timezone.utc)
+            store.append_event(run.id, {"type": "run.cancelled", "phase": "CANCELLED"})
+            store.save(run)
+            return run
         run.planning = await planner.plan(request) if request.use_nrouter_planner else {
             "status": "not_requested", "provider": "none", "scenarios": []}
     except Exception:

@@ -16,3 +16,19 @@ services:
     volumes:
       - ./data:/app/data
     restart: unless-stopped
+  worker:
+    build: .
+    env_file:
+      - path: .env
+        required: false
+    command: ["python", "-m", "breakmybot.worker"]
+    environment:
+      BREAKMYBOT_DATA_DIR: /app/data
+      BREAKMYBOT_ALLOWED_HOSTS: host.docker.internal
+      BREAKMYBOT_DOCKER_MODE: "true"
+      BREAKMYBOT_REQUEST_TIMEOUT_SECONDS: ${BREAKMYBOT_REQUEST_TIMEOUT_SECONDS:-15}
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    volumes:
+      - ./data:/app/data
+    restart: unless-stopped

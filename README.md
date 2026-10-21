@@ -14,7 +14,7 @@ Start the BreakMyBot API and local storage:
 docker compose up -d --build
 ```
 
-The API binds to `127.0.0.1:8000`. Swagger docs are at `http://127.0.0.1:8000/docs`.
+The API binds to `127.0.0.1:8000`; a separate worker claims durable jobs from the shared SQLite database. Queued runs survive API restarts. Swagger docs are at `http://127.0.0.1:8000/docs`.
 
 Install the CLI from this checkout (Python 3.11+):
 
@@ -73,7 +73,7 @@ Methodology `breakmybot-score-v3` computes per-category pass ratios, then combin
 - `GET /api/runs/{id}/report.{html|pdf|json}`
 - `GET /api/scoring/methodology`
 
-SQLite run records and report artifacts are stored under `data/`. The current API is a single-process local developer service; the compose bind mount keeps artifacts in the checkout. PostgreSQL, multi-worker coordination, user accounts, and a web dashboard are not implemented in this release.
+SQLite run, event, and queued-job records and report artifacts are stored under `data/`. The local deployment supports one active worker process using SQLite leases; horizontal multi-worker scaling, PostgreSQL, user accounts, and an independently built Next.js dashboard are not implemented in this release. The current dashboard is served by the API.
 
 ## Integrating Turbulence and MemoryScope
 

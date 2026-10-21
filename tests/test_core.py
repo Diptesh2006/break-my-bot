@@ -28,6 +28,35 @@ def test_target_policy_rejects_query_string_credentials():
         validate_target("http://localhost:8000/?token=secret")
 
 
+def test_sqlite_job_queue_persists_claim_cancellation_and_lease_recovery(tmp_path, monkeypatch):
+    monkeypatch.setenv("BREAKMYBOT_DATA_DIR", str(tmp_path))
+    run = RunRecord(target_url="http://localhost:8000", endpoint_path="/chat", method="GET", profile="quick")
+    store.save(run)
+    store.enqueue(run.id, {"endpoint_path": "/chat", "method": "GET"})
+
+    assert store.claim_job(lease_seconds=1) == (run.id, {"endpoint_path": "/chat", "method": "GET"})
+    assert store.claim_job() is None
+    assert store.cancel_job(run.id) is True
+    assert store.job_cancel_requested(run.id) is True
+    with store.connect() as db:
+        db.execute("UPDATE jobs SET lease_until=0 WHERE run_id=?", (run.id,))
+    assert store.claim_job()[0] == run.id
+    store.acknowledge_job(run.id)
+    assert store.claim_job() is None
+
+
+@pytest.mark.asyncio
+async def test_create_run_enqueues_without_running_in_api_process(tmp_path, monkeypatch):
+    monkeypatch.setenv("BREAKMYBOT_DATA_DIR", str(tmp_path))
+    from breakmybot.api import create_run
+
+    request = RunRequest(target_url="http://localhost:8000", endpoint_path="/chat", method="GET", profile="quick")
+    accepted = await create_run(request)
+    claimed = store.claim_job()
+    assert accepted.run_id == claimed[0]
+    assert RunRequest.model_validate(claimed[1]).endpoint_path == "/chat"
+
+
 def test_payload_redaction_hides_credentials_recursively():
     assert redact_payload({"messages": [{"content": "safe", "api_key": "do-not-store"}]}) == {
         "messages": [{"content": "safe", "api_key": "[REDACTED]"}]}
