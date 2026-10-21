@@ -53,3 +53,19 @@ python -m breakmybot.cli test --url http://127.0.0.1:18089 --endpoint /api/chat/
 - No live nRouter request was made; no paid provider credential/model smoke test is claimed.
 - The Turbulence manifest accurately reports that its simulator is not an external-target fault injector. A target-scoped Turbulence adapter and MemoryScope persistent-memory lifecycle fixtures remain unimplemented.
 - The supported target instrumentation is opt-in FastAPI middleware and tool-wrapper integration; arbitrary agent frameworks are not automatically instrumented.
+
+## Bundled dashboard and current regression check
+
+After adding the standalone Next.js dashboard to the BreakMyBot Compose stack, verification on 2026-10-21 included:
+
+- `npm run build` in `dashboard/`: production build and TypeScript validation passed.
+- `npm run typecheck` in `dashboard/`: passed.
+- `docker compose config -q`: passed with API, worker, and dashboard services. This validates Compose configuration only, not container runtime.
+- Started the production standalone Next.js server, BreakMyBot API, SQLite worker, and demo agent as separate local processes, with run data isolated under `%TEMP%\breakmybot-audit-20261021`.
+- Requested the dashboard page and proxied `GET /api/health`: HTTP 200; the page contained the assessment history and server-side authentication controls.
+- Created and polled a real assessment through the dashboard's API proxy against the demo agent: `run-7274e916f6a6`, `COMPLETED`, 43% scenario coverage, aggregate correctly withheld as `Not established` because evidence did not meet the rubric threshold. The JSON report endpoint returned HTTP 200.
+- Stopped all four processes after verification. This local process test does not establish Docker networking or an actual Compose startup.
+
+The dashboard accepts only the target credential environment-variable name and header/scheme; the secret stays in the API/worker environment and is not sent by the browser. No live paid-provider call was made.
+
+Current source checks after the dashboard/authentication changes: BreakMyBot `pytest -q` passed (29); Turbulence `python -m pytest -q` and `ruff check .` passed (86); MemoryScope `python -m pytest -q` and `ruff check app/beta.py tests/test_beta.py` passed (29). BreakMyBot Ruff, compileall, and dashboard production build also passed. The benchmark-comparison harness, PostgreSQL/migrations, cross-run comparison UI, project management, target-scoped Turbulence engine, persistent-memory lifecycle adapters, live nRouter smoke test, and Docker runtime/network test remain incomplete or unverified; they are not represented as shipped capabilities.

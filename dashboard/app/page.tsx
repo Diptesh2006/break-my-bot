@@ -22,6 +22,9 @@ export default function Home() {
   const [payload, setPayload] = useState('{\n  "message": "Hello. Please reply briefly."\n}');
   const [profile, setProfile] = useState("standard");
   const [expected, setExpected] = useState("");
+  const [authEnv, setAuthEnv] = useState("");
+  const [authHeader, setAuthHeader] = useState("Authorization");
+  const [authScheme, setAuthScheme] = useState("Bearer");
   const [discovery, setDiscovery] = useState<Discovery | null>(null);
   const [runs, setRuns] = useState<Run[]>([]);
   const [run, setRun] = useState<Run | null>(null);
@@ -63,7 +66,7 @@ export default function Home() {
     if (method !== "GET" && !window.confirm("Confirm this test invocation is safe and will not cause unwanted side effects.")) return;
     setBusy(true); setRun(null); setEvents([]);
     try {
-      const created = await api<{ run_id: string }>("/api/runs", { method: "POST", body: JSON.stringify({ target_url: url, endpoint_path: endpoint, method, payload: parsed, profile, expected_substring: expected || null, allow_repeated_post: false }) });
+      const created = await api<{ run_id: string }>("/api/runs", { method: "POST", body: JSON.stringify({ target_url: url, endpoint_path: endpoint, method, payload: parsed, profile, expected_substring: expected || null, allow_repeated_post: false, auth_env: authEnv || null, auth_header: authHeader, auth_scheme: authScheme }) });
       const stream = new EventSource(`/api/runs/${encodeURIComponent(created.run_id)}/events`);
       stream.onmessage = (message) => setEvents((current) => [...current.slice(-80), message.data]);
       stream.addEventListener("scenario.completed", (message) => setEvents((current) => [...current.slice(-80), (message as MessageEvent).data]));
@@ -102,6 +105,7 @@ export default function Home() {
             {discovery && <div className={discovery.reachable ? "preflight success" : "preflight failure"}><span>{discovery.reachable ? "✓ Reachable from execution service" : "× Not reachable from execution service"}</span><span>{discovery.openapi_found ? "OpenAPI detected" : "OpenAPI unavailable"}</span>{discovery.diagnostics.map((item) => <small key={item}>{item}</small>)}</div>}
             <div className="two-col"><div><label htmlFor="method">Method</label><select id="method" value={method} onChange={(e) => setMethod(e.target.value)}>{["POST", "GET", "PUT", "PATCH"].map((item) => <option key={item}>{item}</option>)}</select></div><div><label htmlFor="endpoint">Invocation path</label><input id="endpoint" value={endpoint} onChange={(e) => setEndpoint(e.target.value)} required /></div></div>
             <label htmlFor="payload">Request JSON</label><textarea id="payload" value={payload} onChange={(e) => setPayload(e.target.value)} spellCheck={false} rows={7} />
+            <details className="auth-config"><summary>Authentication <span className="optional">OPTIONAL · SERVER ENVIRONMENT ONLY</span></summary><p>Store the token in BreakMyBot’s <code>.env</code>; enter its variable name here. The secret is never sent through the browser.</p><label htmlFor="auth-env">Credential environment variable</label><input id="auth-env" value={authEnv} onChange={(e) => setAuthEnv(e.target.value)} placeholder="TARGET_API_TOKEN" autoComplete="off" /><div className="two-col"><div><label htmlFor="auth-header">Header name</label><input id="auth-header" value={authHeader} onChange={(e) => setAuthHeader(e.target.value)} /></div><div><label htmlFor="auth-scheme">Scheme</label><input id="auth-scheme" value={authScheme} onChange={(e) => setAuthScheme(e.target.value)} placeholder="Bearer" /></div></div></details>
             <div className="two-col"><div><label htmlFor="profile">Assessment profile</label><select id="profile" value={profile} onChange={(e) => setProfile(e.target.value)}><option value="quick">Quick scan</option><option value="standard">Standard</option><option value="deep">Deep</option></select></div><div><label htmlFor="expected">Expected response text <span className="optional">OPTIONAL</span></label><input id="expected" value={expected} onChange={(e) => setExpected(e.target.value)} placeholder="e.g. contact support" /></div></div>
             <div className="safety-note"><span>!</span><p>Only assess systems you are authorized to test. POST calls are sent once by default; repeated calls require separate CLI authorization.</p></div>
             <button className="button primary start-button" type="submit" disabled={busy}>{busy ? <><span className="spinner" /> Assessment running…</> : "Start assessment  →"}</button>

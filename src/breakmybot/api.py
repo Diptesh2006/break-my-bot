@@ -26,7 +26,12 @@ async def lifespan(_app):
 app = FastAPI(title="BreakMyBot API", version="0.1.0", description="Evidence-based AI application reliability assessments", lifespan=lifespan)
 
 
-@app.get("/", response_class=HTMLResponse)
+@app.get("/", include_in_schema=False)
+def root():
+    return {"product": "BreakMyBot", "dashboard": "http://127.0.0.1:3000", "api_docs": "/docs"}
+
+
+@app.get("/legacy-dashboard", response_class=HTMLResponse, include_in_schema=False)
 def dashboard():
     return HTMLResponse(r"""<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>BreakMyBot</title>

@@ -4,7 +4,7 @@
 
 BreakMyBot connects to an AI application's HTTP API, discovers OpenAPI endpoints and request shapes, performs bounded real invocations, records response and latency evidence, computes a deterministic score only when enough checks ran, and generates portable JSON, HTML, and PDF reports.
 
-The current release is the first black-box vertical slice. It does not claim to observe internal tool calls, persistent memory, safety policy, or hidden agent state. Those checks are marked unsupported until an opt-in target adapter is available. Reports distinguish score from coverage and never use the score as a probability of safety.
+BreakMyBot is a standalone repository: its API, durable worker, SQLite store, CLI, reports, demo target, and bundled dashboard are all part of this project. It supports black-box HTTP checks and opt-in FastAPI tool-fault instrumentation. Persistent memory lifecycle, security boundaries, and hidden agent state remain unsupported unless a suitable target adapter exists. Optional MemoryScope and nRouter integrations do not need to be installed to use the default product. Reports distinguish score from coverage and never present the score as a probability of safety.
 
 ## Quick start
 
@@ -77,6 +77,8 @@ Methodology `breakmybot-score-v3` computes per-category pass ratios, then combin
 
 The local deployment supports one active worker process using SQLite leases; horizontal multi-worker scaling, PostgreSQL, user accounts, and dashboard authentication are not implemented in this release. The bundled dashboard displays persisted API data; keep it bound to loopback.
 
+For target authentication, put the secret in the BreakMyBot API and worker environment (for Compose, add a variable to the ignored local `.env` file), then enter only its variable name in the dashboard's Authentication section. Configure the header and scheme there as needed. Raw tokens are never entered in or stored by the browser.
+
 ## Integrating Turbulence and MemoryScope
 
 The reference audit is in [`docs/reference-audit.md`](docs/reference-audit.md). These are optional, separately operated integrations—not runtime dependencies. Turbulence's seeded faults currently wrap its own Concentrate adapter and cannot affect an arbitrary target. MemoryScope tests a real external SSE endpoint against supplied references but requires an nRouter judge model and explicit consent; its current beta does not cover persistent memory lifecycle. BreakMyBot does not import their code via local paths or transfer their internal demo scores. Adapter contracts and these limits are documented in [`docs/integration-boundaries.md`](docs/integration-boundaries.md).
@@ -122,4 +124,4 @@ pytest
 ruff check src tests
 ```
 
-See [`docs/scoring-methodology.md`](docs/scoring-methodology.md) for formulas and limits. nRouter planner/judge integration is optional future work; no provider call is made by the current vertical slice.
+See [`docs/scoring-methodology.md`](docs/scoring-methodology.md) for formulas and limits. The optional nRouter planner is bounded and consent-gated; the deterministic default workflow makes no paid provider calls. MemoryScope answer judging is a separate optional integration and does not verify persistent-memory behavior.

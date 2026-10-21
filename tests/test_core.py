@@ -379,11 +379,12 @@ def test_report_outputs_are_portable_and_include_limitations(tmp_path: Path):
 
 
 @pytest.mark.asyncio
-async def test_api_dashboard_and_health_routes():
+async def test_api_root_points_to_bundled_dashboard_and_health_routes():
     async with AsyncClient(transport=ASGITransport(app=api_app), base_url="http://test") as client:
         response = await client.get("/")
         assert response.status_code == 200
-        assert "Find the failure before your users do" in response.text
+        assert response.json()["dashboard"] == "http://127.0.0.1:3000"
+        assert response.json()["api_docs"] == "/docs"
         health = await client.get("/api/health")
         assert health.json()["product"] == "BreakMyBot"
 

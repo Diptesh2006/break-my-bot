@@ -2,7 +2,7 @@
 
 Audit date: 2026-10-21
 
-## Repositories
+## Repositories at initial audit
 
 | Product | Local path | Remote | Revision | Working tree |
 |---|---|---|---|---|
@@ -37,11 +37,13 @@ Current risks: localhost routing differs between host and Docker; Docker-side re
 ## Planned changes
 
 - BreakMyBot: build the first functional vertical slice: safe HTTP discovery and payload selection, baseline and bounded repeat/latency checks, persisted runs, deterministic score/coverage separation, CLI, portable HTML/JSON reports, Docker connectivity setup, demo target, and developer documentation.
-- Turbulence: no direct modifications planned for the initial slice; expose an integration boundary and reuse its verified capabilities only when they can operate against the connected target.
-- MemoryScope: no direct modifications planned for the initial slice; document and optionally call its existing API when its prerequisites are explicitly met.
+- Turbulence: expose an integration boundary and reuse verified capabilities only when they can operate against the connected target. Its capability manifest was added and pushed; its own simulator remains independent and is not treated as target evidence.
+- MemoryScope: document and optionally call its existing API when prerequisites are explicitly met. A versioned capability manifest and configurable nRouter base URL were added and pushed; persistent memory lifecycle is still outside the advertised capability.
 
 ## Implementation status update
 
 The initial BreakMyBot vertical slice is implemented and pushed to its `main` branch. It now also supports opt-in FastAPI target instrumentation for session-scoped tool faults; the run only scores an instrumented scenario when the target confirms the matching injection event, cleanup succeeds, and a response invariant is supplied. The current scoring methodology is `breakmybot-score-v3`, with weighted category scores, explicit observed-weight coverage, and reports listing observed scopes. The standalone demo demonstrates actual timeout recovery.
+
+Follow-up work expanded the standalone BreakMyBot repository with its own SQLite-backed API/worker stack, CLI, reports, demo, Next.js dashboard, and optional server-side target authentication. Clone/run does not require either reference repository. A live local dashboard-to-API-to-worker-to-demo run and regressions in all three repositories are recorded in [`final-verification.md`](final-verification.md). The original repository revisions above describe the audit starting point, not current HEADs.
 
 MemoryScope's `memoryscope-answer-evaluation-v1` contract is consumed by the BreakMyBot bridge; it explicitly advertises persistent memory lifecycle and tenant-isolation checks as unsupported. Its judge honors the configured nRouter-compatible base URL and requires HTTPS for non-loopback providers. Turbulence's `breakmybot-turbulence-v1` contract advertises that its current simulator cannot inject faults into arbitrary external targets. Capability contracts are pushed in their respective repositories. Separate-process worker and CLI end-to-end runs verified the localhost agent workflow, including passing and failing fault chains; Docker engine availability and live nRouter calls remain unverified.
