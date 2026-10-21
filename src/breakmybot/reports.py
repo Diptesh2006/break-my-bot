@@ -81,6 +81,18 @@ def generate(run: RunRecord, output_dir: Path) -> dict[str, str]:
         f"<tr><td>{html.escape(item.get('title', 'Scenario proposal'))}</td><td>{html.escape(item.get('hypothesis', ''))}</td><td>{'Eligible for current runner' if item.get('eligible_for_current_runner') else 'Requires unavailable capability'}</td><td>Not executed</td></tr>"
         for item in run.planning.get("scenarios", [])
     ) or "<tr><td colspan='4'>No scenario plan was requested.</td></tr>"
+    investigation = run.planning.get("investigation", {})
+    investigation_titles = {
+        "observed_facts": "Observed baseline facts",
+        "inferred_dependencies": "Inferred dependencies · unverified",
+        "failure_sensitive_operations": "Failure-sensitive operations",
+        "candidate_invariants": "Candidate invariants · hypotheses",
+        "coverage_gaps": "Coverage gaps",
+    }
+    investigation_sections = "".join(
+        f"<h3>{html.escape(title)}</h3><ul>{''.join(f'<li>{html.escape(str(item))}</li>' for item in (investigation.get(key) or ['None reported.']))}</ul>"
+        for key, title in investigation_titles.items()
+    ) if investigation else "<p>No LLM investigation was performed.</p>"
     score = run.scoring.get("overall_score")
     score_text = f"{score}/100" if score is not None else "Not established"
     observed_scopes = ", ".join(run.scoring.get("observed_scopes", [])) or "none"
@@ -92,6 +104,7 @@ def generate(run: RunRecord, output_dir: Path) -> dict[str, str]:
 <h2>Category scorecard</h2><table><thead><tr><th>Category</th><th>Score</th><th>Coverage</th><th>Conclusive</th></tr></thead><tbody>{category_rows}</tbody></table>
 <h2>Findings</h2>{finding_rows}
 <h2>Scenario planning hypotheses</h2><table><thead><tr><th>Proposal</th><th>Hypothesis</th><th>Capability gate</th><th>Execution</th></tr></thead><tbody>{plan_rows}</tbody></table>
+<h2>LLM investigation · hypotheses, not scored facts</h2><p>Provider: {html.escape(str(run.planning.get('provider', 'not recorded')))} · Model: {html.escape(str(run.planning.get('actual_model', run.planning.get('requested_model', 'not recorded'))))}</p>{investigation_sections}
 <h2>Scenario inventory</h2><table><thead><tr><th>ID</th><th>Scenario</th><th>Category</th><th>Result</th><th>HTTP</th><th>Limitations</th></tr></thead><tbody>{scenario_rows}</tbody></table>
 <h2>Method and limitations</h2><p>Methodology: {html.escape(run.scoring.get('methodology', ''))}. The score describes only executed checks and is not a universal safety certification.</p>
 <p>Unsupported capabilities: {html.escape(', '.join(run.scoring.get('untested_capabilities', [])))}</p><small>Run {html.escape(run.id)} · {html.escape(run.created_at.isoformat())}</small></body></html>"""
@@ -122,6 +135,16 @@ def generate(run: RunRecord, output_dir: Path) -> dict[str, str]:
         ("TEXTCOLOR", (0, 0), (-1, 0), colors.white), ("GRID", (0, 0), (-1, -1), 0.4, colors.grey),
         ("VALIGN", (0, 0), (-1, -1), "TOP"), ("FONTSIZE", (0, 0), (-1, -1), 8)]))
     story.extend([table, Spacer(1, 16), Paragraph("Unsupported: " + html.escape(", ".join(run.scoring.get("untested_capabilities", []))), styles["BodyText"])])
+    story.append(Paragraph("LLM investigation · hypotheses, not scored facts", styles["Heading2"]))
+    story.append(Paragraph("Provider: " + html.escape(str(run.planning.get("provider", "not recorded")))
+        + " · Model: " + html.escape(str(run.planning.get("actual_model", run.planning.get("requested_model", "not recorded")))), styles["BodyText"]))
+    if investigation:
+        for key, title in investigation_titles.items():
+            story.append(Paragraph(html.escape(title), styles["Heading3"]))
+            story.extend(Paragraph("• " + html.escape(str(item)), styles["BodyText"])
+                for item in (investigation.get(key) or ["None reported."]))
+    else:
+        story.append(Paragraph("No LLM investigation was performed.", styles["BodyText"]))
     failed = [s for s in run.scenarios if s.status == "VERIFIED_FAILURE"]
     if failed:
         story.append(Paragraph("Verified findings", styles["Heading2"]))

@@ -762,6 +762,26 @@ def test_report_outputs_are_portable_and_include_limitations(tmp_path: Path):
     assert report_json["report_paths"] == {"html": "report.html", "pdf": "report.pdf", "json": "report.json"}
 
 
+def test_report_surfaces_investigator_findings_as_unscored_hypotheses(tmp_path: Path):
+    from pypdf import PdfReader
+
+    run = RunRecord(target_url="http://localhost:8000", endpoint_path="/api/chat", method="POST", profile="quick")
+    run.planning = {"status": "completed", "provider": "nRouter", "actual_model": "test-model",
+        "investigation": {"observed_facts": ["Baseline returned HTTP 200"],
+            "inferred_dependencies": ["May call a catalog service"], "failure_sensitive_operations": [],
+            "candidate_invariants": ["Do not claim an unconfirmed refund"], "coverage_gaps": ["No tool telemetry"]},
+        "scenarios": []}
+    run.scoring = calculate(run)
+    paths = generate(run, tmp_path)
+    html_text = Path(paths["html"]).read_text(encoding="utf-8")
+    assert "hypotheses, not scored facts" in html_text
+    assert "May call a catalog service" in html_text
+    assert "Do not claim an unconfirmed refund" in html_text
+    pdf_text = " ".join(page.extract_text() or "" for page in PdfReader(paths["pdf"]).pages)
+    assert "Inferred dependencies" in pdf_text
+    assert "May call a catalog service" in pdf_text
+
+
 def test_verified_failure_report_contains_expected_actual_reproduction_and_remediation(tmp_path: Path):
     from pypdf import PdfReader
 
