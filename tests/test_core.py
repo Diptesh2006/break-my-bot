@@ -527,16 +527,25 @@ def test_report_outputs_are_portable_and_include_limitations(tmp_path: Path):
 
 
 def test_verified_failure_report_contains_expected_actual_reproduction_and_remediation(tmp_path: Path):
+    from pypdf import PdfReader
+
     run = RunRecord(target_url="http://localhost:8000", endpoint_path="/api/chat", method="POST",
         profile="quick", application_name="Isolated support demo",
         request_payload={"api_key": "[REDACTED]", "message": "refund policy"})
-    run.scenarios = [ScenarioResult(scenario_id="instrumented-tool-1", name="Refund tool timeout",
-        category="Tool reliability", status="VERIFIED_FAILURE", severity="high", http_status=200,
-        evidence={"faults": [{"tool": "refund_policy", "kind": "timeout"}],
-            "fault_injected": True, "cleanup_succeeded": True,
-            "response_excerpt": "Your refund is guaranteed for any purchase date.",
-            "expected_substring_passed": False})]
+    run.scenarios = [
+        ScenarioResult(scenario_id="http", name="Baseline invocation", category="HTTP reliability", status="PASSED"),
+        ScenarioResult(scenario_id="contract", name="Response contract", category="Response validity", status="PASSED"),
+        ScenarioResult(scenario_id="latency", name="Latency threshold", category="Latency", status="PASSED"),
+        ScenarioResult(scenario_id="instrumented-tool-1", name="Refund lost acknowledgment",
+            category="Tool reliability", status="VERIFIED_FAILURE", severity="critical", http_status=200,
+            evidence={"faults": [{"tool": "refund_commit", "kind": "lost_acknowledgment"}],
+                "fault_injected": True, "cleanup_succeeded": True, "side_effect_count": 2,
+                "response_excerpt": "Refund completed with side-effect count 2.",
+                "expected_substring_passed": False}),
+    ]
     run.scoring = calculate(run)
+    assert run.scoring["overall_score"] == 67
+    assert run.scoring["critical_findings"] == 1
 
     paths = generate(run, tmp_path)
     html_report = Path(paths["html"]).read_text(encoding="utf-8")
@@ -545,10 +554,17 @@ def test_verified_failure_report_contains_expected_actual_reproduction_and_remed
     assert "Actual observation" in html_report
     assert "Ordered fault sequence" in html_report
     assert "idempotency protection" in html_report
-    assert "Your refund is guaranteed" in html_report
+    assert "side-effect count 2" in html_report
     assert "[REDACTED]" in html_report
     assert 'api_key&quot;: &quot;[REDACTED]' in html_report
-    assert json_report["scenarios"][0]["evidence"]["fault_injected"] is True
+    assert json_report["scenarios"][3]["evidence"]["fault_injected"] is True
+    pdf_text = "\n".join(page.extract_text() or "" for page in PdfReader(paths["pdf"]).pages)
+    normalized_pdf_text = " ".join(pdf_text.split())
+    assert "67/100" in normalized_pdf_text
+    assert "Refund lost acknowledgment" in normalized_pdf_text
+    assert "side-effect count 2" in normalized_pdf_text
+    assert "Ordered fault sequence" in normalized_pdf_text
+    assert "[REDACTED]" in normalized_pdf_text
 
 
 @pytest.mark.asyncio
