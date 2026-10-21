@@ -74,6 +74,41 @@ def _case_summary(name: str, runs: list[dict], scenario_id: str, expected_status
         "attempts": attempts}
 
 
+def _metrics(cases: list[dict]) -> dict:
+    known_bugs = [case for case in cases if case["expected_scenario_status"] == "VERIFIED_FAILURE"]
+    controls = [case for case in cases if case["expected_scenario_status"] == "PASSED"]
+    attempts = [attempt for case in cases for attempt in case["attempts"]]
+    bug_attempts = [attempt for case in known_bugs for attempt in case["attempts"]]
+    control_attempts = [attempt for case in controls for attempt in case["attempts"]]
+    valid_statuses = {"PASSED", "VERIFIED_FAILURE"}
+    verified_findings = [attempt for attempt in bug_attempts
+        if attempt["scenario_status"] == "VERIFIED_FAILURE"]
+    durations = [attempt["duration_ms"] for attempt in verified_findings
+        if attempt["duration_ms"] is not None]
+    return {
+        "known_bug_conditions_detected": sum(case["outcome_match"] for case in known_bugs),
+        "known_bug_conditions_total": len(known_bugs),
+        "known_bug_attempts_verified": len(verified_findings),
+        "known_bug_attempts_total": len(bug_attempts),
+        "verified_failure_rate_on_known_bug_attempts": (
+            len(verified_findings) / len(bug_attempts) if bug_attempts else None),
+        "reproducible_known_bug_conditions": sum(case["reproduced_on_both_attempts"] for case in known_bugs),
+        "scenario_validity_rate": (
+            sum(attempt["scenario_status"] in valid_statuses for attempt in attempts) / len(attempts)
+            if attempts else 0),
+        "false_positive_rate_on_fixed_control": (
+            sum(attempt["scenario_status"] == "VERIFIED_FAILURE" for attempt in control_attempts)
+            / len(control_attempts) if control_attempts else None),
+        "run_execution_success_rate": (
+            sum(attempt["run_status"] == "COMPLETED" for attempt in attempts) / len(attempts)
+            if attempts else 0),
+        "mean_target_time_per_verified_finding_ms": (
+            sum(durations) / len(durations) if durations else None),
+        "model_tokens": 0,
+        "provider_cost_usd": 0,
+    }
+
+
 def run_benchmark(api_url: str, target_url: str) -> dict:
     token = os.getenv(INSTRUMENTATION_ENV, "")
     if len(token) < 32:
@@ -124,33 +159,12 @@ def run_benchmark(api_url: str, target_url: str) -> dict:
             "instrumented-tool-1", "VERIFIED_FAILURE")
 
     cases = [fixed_control, stale_memory, single_case, chain_case]
-    known_bugs = [stale_memory, single_case, chain_case]
-    execution_rows = [attempt for case in cases for attempt in case["attempts"]]
-    verified_findings = [attempt for case in known_bugs for attempt in case["attempts"]
-        if attempt["scenario_status"] == "VERIFIED_FAILURE"]
-    response_durations = [attempt["duration_ms"] for attempt in verified_findings
-        if attempt["duration_ms"] is not None]
-    total_experiments = len(execution_rows)
-    passed_controls = sum(attempt["scenario_status"] == "PASSED" for attempt in fixed_control["attempts"])
     return {
         "schema_version": "breakmybot-demo-benchmark-v1",
         "created_at": datetime.now(timezone.utc).isoformat(),
         "target_url": target_url,
         "methodology": "Deterministic local fixture; 2 repetitions per condition; one fixed control and three seeded known-bug conditions.",
-        "metrics": {
-            "known_bug_conditions_detected": sum(case["outcome_match"] for case in known_bugs),
-            "known_bug_conditions_total": len(known_bugs),
-            "known_bug_attempts_verified": len(verified_findings),
-            "known_bug_attempts_total": sum(len(case["attempts"]) for case in known_bugs),
-            "reproducible_known_bug_conditions": sum(case["reproduced_on_both_attempts"] for case in known_bugs),
-            "false_positive_rate_on_fixed_control": (2 - passed_controls) / 2,
-            "run_execution_success_rate": (sum(row["run_status"] == "COMPLETED" for row in execution_rows) / total_experiments
-                if total_experiments else 0),
-            "mean_target_time_per_verified_finding_ms": (sum(response_durations) / len(response_durations)
-                if response_durations else None),
-            "model_tokens": 0,
-            "provider_cost_usd": 0,
-        },
+        "metrics": _metrics(cases),
         "cases": cases,
         "limitations": [
             "This validates only the listed deterministic demo fixtures; it is not a comparative research result.",
