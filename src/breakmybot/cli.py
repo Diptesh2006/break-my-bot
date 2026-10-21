@@ -65,6 +65,8 @@ def test(
     instrumented_faults: Path | None = typer.Option(None, "--instrumented-faults", help="JSON file of opt-in tool fault scenarios"),
     instrumentation_auth_env: str = typer.Option("BREAKMYBOT_INSTRUMENTATION_TOKEN", "--instrumentation-auth-env", help="Environment variable containing the target instrumentation control token"),
     plan_with_nrouter: bool = typer.Option(False, "--plan-with-nrouter", help="Opt in to send endpoint metadata to the configured nRouter planner"),
+    execute_planned_scenarios: bool = typer.Option(False, "--execute-planned-scenarios", help="Explicitly authorize bounded nRouter-proposed faults from the supplied instrumentation allowlist"),
+    max_planned_scenarios: int = typer.Option(3, "--max-planned-scenarios", min=1, max=5, help="Maximum number of nRouter-proposed scenarios to execute (1-5)"),
 ):
     """Discover and run bounded black-box HTTP checks."""
     if profile not in {"quick", "standard", "deep"}:
@@ -166,13 +168,32 @@ def test(
         consent = Confirm.ask("MemoryScope will send these references and the target answers to the configured nRouter judge. Consent?", default=False)
         memory_assessment = {"agent_path": memory_agent_path or endpoint, "cases": cases,
             "send_to_nrouter": consent, "auth_env": memory_auth_env}
-    if plan_with_nrouter and not Confirm.ask("Send target name, endpoint path and payload field names to nRouter for scenario planning?", default=False):
+    if plan_with_nrouter and not Confirm.ask(
+        "Send target name, endpoint/method and payload field names to nRouter for scenario planning? "
+        "When generated execution is enabled, the approved tool/fault pairs and response oracles are also sent.",
+        default=False,
+    ):
         plan_with_nrouter = False
+    if execute_planned_scenarios:
+        if not plan_with_nrouter:
+            raise typer.BadParameter("--execute-planned-scenarios requires --plan-with-nrouter and its consent")
+        if instrumented_assessment is None:
+            raise typer.BadParameter("--execute-planned-scenarios requires an accepted --instrumented-faults allowlist")
+        if method != "GET" and not allow_repeated_post:
+            raise typer.BadParameter("planned fault scenarios require --allow-repeated-post and its safety confirmation")
+        if not Confirm.ask(
+            f"Execute up to {max_planned_scenarios} AI-generated scenarios against only this endpoint, "
+            "using only the approved tool/fault pairs and expected-response oracles? The target may have side effects.",
+            default=False,
+        ):
+            execute_planned_scenarios = False
     created = api_request("POST", "/api/runs", json={"target_url": url, "endpoint_path": endpoint,
         "method": method, "payload": payload, "profile": profile, "application_name": discovered.get("application_name"),
         "expected_substring": expected, "allow_repeated_post": allow_repeated_post, "auth_env": auth_env,
         "memory_assessment": memory_assessment, "instrumented_assessment": instrumented_assessment,
-        "use_nrouter_planner": plan_with_nrouter})
+        "use_nrouter_planner": plan_with_nrouter,
+        "execute_planned_scenarios": execute_planned_scenarios,
+        "max_planned_scenarios": max_planned_scenarios})
     run_id = created["run_id"]
     console.print(f"Assessment started: {run_id}")
     while True:
@@ -187,7 +208,9 @@ def test(
     console.print(f"\n[bold]BREAKMYBOT - TEST {run['status']}[/bold]")
     console.print(f"Observed reliability score: {score}/100" if score is not None else "Observed reliability score: Not established")
     console.print(f"Coverage: {run['scoring'].get('coverage_percent', 0)}%")
-    console.print(f"Scenario planner: {run.get('planning', {}).get('status', 'not requested')} ({len(run.get('planning', {}).get('scenarios', []))} proposals; none automatically executed)")
+    executed_plans = sum(bool(item.get("executed")) for item in run.get("planning", {}).get("scenarios", []))
+    execution_note = f"{executed_plans} generated scenarios executed" if execute_planned_scenarios else "proposals not executed"
+    console.print(f"Scenario planner: {run.get('planning', {}).get('status', 'not requested')} ({len(run.get('planning', {}).get('scenarios', []))} proposals; {execution_note})")
     counts = run["scoring"]["scenario_counts"]
     console.print(f"Passed: {counts['PASSED']} | Failed: {counts['VERIFIED_FAILURE']} | Unsupported: {counts['UNSUPPORTED']}")
     console.print(run["scoring"]["warning"])

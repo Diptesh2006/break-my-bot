@@ -89,7 +89,20 @@ class RunRequest(BaseModel):
     memory_assessment: "MemoryAssessment | None" = None
     instrumented_assessment: InstrumentedAssessment | None = None
     use_nrouter_planner: bool = False
+    execute_planned_scenarios: bool = False
+    max_planned_scenarios: int = Field(default=3, ge=1, le=5)
     max_latency_seconds: float = Field(default=10, gt=0, le=120)
+
+    @model_validator(mode="after")
+    def validate_planned_execution_opt_in(self):
+        if self.execute_planned_scenarios:
+            if not self.use_nrouter_planner:
+                raise ValueError("planned scenario execution requires the nRouter planner")
+            if self.instrumented_assessment is None:
+                raise ValueError("planned scenario execution requires an approved instrumentation allowlist")
+            if self.method != "GET" and not self.allow_repeated_post:
+                raise ValueError("planned scenario execution requires explicit repeated-call authorization")
+        return self
 
 
 class MemoryCase(BaseModel):

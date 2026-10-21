@@ -11,6 +11,7 @@ import httpx
 from urllib.parse import urlsplit, urlunsplit
 
 from . import instrumentation, memoryscope, planner, reports, scoring, store
+from .models import InstrumentedAssessment, InstrumentedFaultChain, InstrumentedToolFault
 from .models import RunRecord, RunRequest, ScenarioResult
 from .redaction import redact_text
 from .target import docker_resolve_url, invoke, validate_target
@@ -34,7 +35,8 @@ def _scenario_event(run_id: str, result: ScenarioResult, completed: int) -> None
 
 async def _run_instrumented_scenarios(run: RunRecord, request: RunRequest, timeout: float,
                                       headers: dict[str, str] | None,
-                                      cancel: asyncio.Event | None) -> list[ScenarioResult]:
+                                      cancel: asyncio.Event | None,
+                                      scenario_id_prefix: str = "instrumented-tool") -> list[ScenarioResult]:
     config = request.instrumented_assessment
     if config is None:
         return []
@@ -83,7 +85,7 @@ async def _run_instrumented_scenarios(run: RunRecord, request: RunRequest, timeo
         for index, (case_name, faults, expected_substring) in enumerate(cases, 1):
             if cancel and cancel.is_set():
                 break
-            scenario_id = f"instrumented-tool-{index}"
+            scenario_id = f"{scenario_id_prefix}-{index}"
             store.append_event(run.id, {"type": "scenario.started", "scenario_id": scenario_id,
                 "name": f"Tool fault scenario: {case_name}", "category": "Tool reliability"})
             session_id = uuid4().hex
@@ -154,6 +156,55 @@ async def _run_instrumented_scenarios(run: RunRecord, request: RunRequest, timeo
                 duration_ms=duration, http_status=status_code, evidence=evidence, limitation=limitation)
             results.append(result)
             _scenario_event(run.id, result, len(run.scenarios) + len(results))
+    return results
+
+
+async def _run_planned_scenarios(run: RunRecord, request: RunRequest, timeout: float,
+                                 headers: dict[str, str] | None,
+                                 cancel: asyncio.Event | None) -> list[ScenarioResult]:
+    if not request.execute_planned_scenarios or request.instrumented_assessment is None:
+        return []
+    selected: list[tuple[dict, planner.ScenarioProposal]] = []
+    for row in run.planning.get("scenarios", []):
+        if len(selected) >= request.max_planned_scenarios:
+            break
+        proposal, reason = planner.gate_generated_proposal(row, request)
+        if proposal is None:
+            row["execution_eligible"] = False
+            row["execution_gate_reason"] = reason
+            continue
+        selected.append((row, proposal))
+
+    results: list[ScenarioResult] = []
+    for row, proposal in selected:
+        if cancel and cancel.is_set():
+            break
+        execution = proposal.execution
+        if execution is None:
+            continue
+        if execution.mode == "individual":
+            faults = [InstrumentedToolFault(tool=execution.faults[0].tool,
+                kind=execution.faults[0].kind, expected_substring=execution.expected_substring,
+                delay_seconds=execution.faults[0].delay_seconds,
+                every_n_calls=execution.faults[0].every_n_calls,
+                on_call=execution.faults[0].on_call)]
+            config = InstrumentedAssessment(auth_env=request.instrumented_assessment.auth_env,
+                faults=faults)
+        else:
+            faults = [InstrumentedToolFault(tool=item.tool, kind=item.kind,
+                delay_seconds=item.delay_seconds, every_n_calls=item.every_n_calls,
+                on_call=item.on_call) for item in execution.faults]
+            config = InstrumentedAssessment(auth_env=request.instrumented_assessment.auth_env,
+                chains=[InstrumentedFaultChain(name=proposal.scenario_id, faults=faults,
+                    expected_substring=execution.expected_substring)])
+        planned_request = request.model_copy(update={"instrumented_assessment": config})
+        scenario_id_prefix = f"planned-{proposal.scenario_id}"
+        planned_results = await _run_instrumented_scenarios(run, planned_request, timeout, headers,
+            cancel, scenario_id_prefix=scenario_id_prefix)
+        results.extend(planned_results)
+        row["executed"] = bool(planned_results)
+        row["execution_scenario_ids"] = [item.scenario_id for item in planned_results]
+        row["execution_statuses"] = [item.status for item in planned_results]
     return results
 
 
@@ -316,6 +367,11 @@ async def execute(run_id: str, request: RunRequest, cancel: asyncio.Event | None
             else:
                 _phase(run.id, "INSTRUMENTED_FAULTS")
                 run.scenarios.extend(await _run_instrumented_scenarios(run, request, timeout, headers, cancel))
+                if request.execute_planned_scenarios:
+                    _phase(run.id, "AI_PLANNED_SCENARIOS",
+                        max_scenarios=request.max_planned_scenarios)
+                    run.scenarios.extend(await _run_planned_scenarios(
+                        run, request, timeout, headers, cancel))
         if request.memory_assessment:
             _phase(run.id, "MEMORY_EVALUATION")
             run.scenarios.extend(await memoryscope.evaluate(request, request.memory_assessment, cancel))
