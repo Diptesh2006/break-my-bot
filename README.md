@@ -8,29 +8,44 @@ BreakMyBot is a standalone repository: its API, durable worker, SQLite store, CL
 
 ## Quick start
 
-Start the BreakMyBot API and local storage:
+Clone only this repository. No checkout, installation, API key, or service from Turbulence or MemoryScope is needed for the default product. Choose either the Docker stack (API, worker, and dashboard) or the Python-only local setup.
+
+### Full local stack with Docker
+
+Prerequisite: Docker Desktop (Windows/macOS) or Docker Engine with the Compose plugin (Linux).
 
 ```powershell
 docker compose up -d --build
 ```
 
-BreakMyBot is self-contained: clone this repository and run `docker compose up -d --build`. It starts the API at `http://127.0.0.1:8000`, a worker, and the Next.js dashboard at `http://127.0.0.1:3000`; SQLite and reports are stored in this checkout's `data/` directory. Turbulence and MemoryScope are not required to install, run, or use the default product. Swagger docs are at `http://127.0.0.1:8000/docs`.
+This starts the API at `http://127.0.0.1:8000`, a worker, and the dashboard at `http://127.0.0.1:3000`; SQLite and reports are stored in this checkout's `data/` directory. Swagger docs are at `http://127.0.0.1:8000/docs`.
 
-Queued runs survive API restarts. Worker leases are renewed while a run executes; an expired in-flight run is marked failed instead of automatically replayed, avoiding duplicate target side effects.
+### API and CLI without Docker
 
-Install the CLI from this checkout (Python 3.11+):
+Python 3.11+ is required. From the repository root, create and activate an environment (`.venv\\Scripts\\Activate.ps1` in PowerShell or `source .venv/bin/activate` on macOS/Linux), then install the project:
 
 ```powershell
 python -m venv .venv
-.\.venv\Scripts\Activate.ps1
 python -m pip install -e .
 breakmybot doctor
 ```
 
-Run an assessment:
+Start the API and durable worker in separate terminals with the environment activated:
 
 ```powershell
-breakmybot test --url http://localhost:8000
+uvicorn breakmybot.api:app --host 127.0.0.1 --port 8000
+```
+
+```powershell
+python -m breakmybot.worker
+```
+
+They use local SQLite storage under `data/`. For a quick CLI-only check against your own reachable target, `breakmybot test --url <target-url>` does not require the API or worker. Queued runs survive API restarts; an expired in-flight run is marked failed rather than replayed, avoiding duplicate target side effects.
+
+Run an assessment against a local target:
+
+```powershell
+breakmybot test --url http://localhost:8001 --endpoint /api/chat --payload-json '{"message":"What is the refund policy?"}'
 ```
 
 For an endpoint without OpenAPI, specify it and the request JSON:
