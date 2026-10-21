@@ -7,6 +7,7 @@ from breakmybot import runner, store
 from breakmybot.api import app as api_app
 from breakmybot.models import MemoryAssessment, MemoryCase, RunRecord, RunRequest, ScenarioResult
 from breakmybot.memoryscope import evaluate as evaluate_memory
+from breakmybot.planner import mock_plan, plan
 from breakmybot.reports import generate
 from breakmybot.redaction import redact_payload
 from breakmybot.scoring import calculate
@@ -97,3 +98,24 @@ async def test_memoryscope_bridge_skips_without_explicit_nrouter_consent():
     assert len(results) == 1
     assert results[0].status == "SKIPPED"
     assert "not authorized" in results[0].limitation
+
+
+def test_deterministic_planner_marks_unsupported_fault_injection_as_unexecutable():
+    request = RunRequest(target_url="http://localhost:8000", endpoint_path="/api/chat", method="POST",
+        payload={"message": "hello"})
+    result = mock_plan(request)
+    assert result["status"] == "mock"
+    assert result["scenarios"][0]["eligible_for_current_runner"] is True
+    assert result["scenarios"][1]["eligible_for_current_runner"] is False
+    assert all(item["executed"] is False for item in result["scenarios"])
+
+
+@pytest.mark.asyncio
+async def test_nrouter_planner_needs_explicit_credentials(monkeypatch):
+    monkeypatch.delenv("NROUTER_API_KEY", raising=False)
+    monkeypatch.delenv("BREAKMYBOT_PLANNER_MODEL", raising=False)
+    request = RunRequest(target_url="http://localhost:8000", endpoint_path="/api/chat", method="POST",
+        payload={"message": "hello"})
+    result = await plan(request)
+    assert result["status"] == "unavailable"
+    assert result["scenarios"] == []

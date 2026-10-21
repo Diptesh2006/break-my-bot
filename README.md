@@ -81,6 +81,8 @@ The reference audit is in [`docs/reference-audit.md`](docs/reference-audit.md). 
 
 An optional MemoryScope API bridge is available for grounded answer evaluation. Configure `MEMORYSCOPE_API_URL` for the separately running service, then pass an approved case array with `--memory-cases cases.json`. BreakMyBot asks for consent before sending reference cases and target answers to the nRouter judge. Configure the MemoryScope service's `NROUTER_API_KEY`, `NROUTER_JUDGE_MODEL`, and target-origin allowlist there. This evaluates answers against references; it does not test persistent-memory lifecycle or internal memory controls.
 
+An optional structured scenario planner can be enabled with `--plan-with-nrouter` after configuring `NROUTER_API_KEY` and `BREAKMYBOT_PLANNER_MODEL`. It sends only the application name, endpoint path, method, and payload field names after a separate consent prompt. Proposed scenarios are capability-gated, recorded as hypotheses, and never automatically executed. Each run makes at most one bounded planning call; usage is recorded when nRouter returns it.
+
 ## Local demo target
 
 Run this separate demo process:

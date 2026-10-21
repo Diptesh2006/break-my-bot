@@ -7,7 +7,7 @@ from datetime import datetime, timezone
 
 import httpx
 
-from . import memoryscope, reports, scoring, store
+from . import memoryscope, planner, reports, scoring, store
 from .models import RunRecord, RunRequest, ScenarioResult
 from .target import invoke, validate_target
 
@@ -19,9 +19,23 @@ async def execute(run_id: str, request: RunRequest, cancel: asyncio.Event | None
     run.status = "RUNNING"
     store.save(run)
     store.append_event(run.id, {"type": "run.started", "phase": "DISCOVERING"})
-    attempts = min({"quick": 1, "standard": 3, "deep": 8}[request.profile],
-        max(1, int(os.getenv("BREAKMYBOT_MAX_SCENARIOS", "12"))))
-    timeout = float(os.getenv("BREAKMYBOT_REQUEST_TIMEOUT_SECONDS", "15"))
+    try:
+        run.planning = await planner.plan(request) if request.use_nrouter_planner else {
+            "status": "not_requested", "provider": "none", "scenarios": []}
+    except Exception:
+        run.planning = {"status": "error", "provider": "nRouter", "reason": "Planner setup failed.", "scenarios": []}
+    store.save(run)
+    store.append_event(run.id, {"type": "planning.completed", "status": run.planning.get("status"),
+        "scenario_count": len(run.planning.get("scenarios", []))})
+    try:
+        scenario_limit = max(1, int(os.getenv("BREAKMYBOT_MAX_SCENARIOS", "12")))
+    except ValueError:
+        scenario_limit = 12
+    try:
+        timeout = max(1, float(os.getenv("BREAKMYBOT_REQUEST_TIMEOUT_SECONDS", "15")))
+    except ValueError:
+        timeout = 15
+    attempts = min({"quick": 1, "standard": 3, "deep": 8}[request.profile], scenario_limit)
     if request.method != "GET" and attempts > 1 and not request.allow_repeated_post:
         run.scenarios.append(ScenarioResult(scenario_id="repeat-safety", name="Repeat invocation safety gate",
             category="Safety", status="UNSUPPORTED", limitation="Repeated non-GET calls were not authorized because the endpoint may create side effects."))

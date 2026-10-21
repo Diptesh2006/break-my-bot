@@ -47,6 +47,7 @@ class RunRequest(BaseModel):
     auth_header: str = Field(default="Authorization", pattern=r"^[A-Za-z0-9-]{1,64}$")
     auth_scheme: str = Field(default="Bearer", max_length=24, pattern=r"^[A-Za-z0-9_-]*$")
     memory_assessment: "MemoryAssessment | None" = None
+    use_nrouter_planner: bool = False
     max_latency_seconds: float = Field(default=10, gt=0, le=120)
 
 
@@ -102,6 +103,7 @@ class RunRecord(BaseModel):
     completed_at: datetime | None = None
     scenarios: list[ScenarioResult] = Field(default_factory=list)
     scoring: dict[str, Any] = Field(default_factory=dict)
+    planning: dict[str, Any] = Field(default_factory=dict)
     report_paths: dict[str, str] = Field(default_factory=dict)
     error: str | None = None
 

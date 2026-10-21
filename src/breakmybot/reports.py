@@ -31,6 +31,10 @@ def generate(run: RunRecord, output_dir: Path) -> dict[str, str]:
         f"<article><h3>{html.escape(s.name)} · {html.escape(s.severity)}</h3><p>Category: {html.escape(s.category)}. Scenario: {html.escape(s.scenario_id)}.</p><p>Observed status: {html.escape(str(s.http_status or 'No HTTP response'))}. Duration: {html.escape(str(s.duration_ms or 'N/A'))} ms.</p><p>Evidence: {html.escape(json.dumps(s.evidence, ensure_ascii=False))}</p><p>Reproduction request: {html.escape(run.method)} {html.escape(run.target_url + run.endpoint_path)} with payload <code>{html.escape(json.dumps(run.request_payload, ensure_ascii=False))}</code>. Credential-like fields are redacted in stored evidence. Repeat only in an isolated, resettable test environment.</p></article>"
         for s in run.scenarios if s.status == "VERIFIED_FAILURE"
     ) or "<p>No verified failures were observed in the executed scenarios.</p>"
+    plan_rows = "".join(
+        f"<tr><td>{html.escape(item.get('title', 'Scenario proposal'))}</td><td>{html.escape(item.get('hypothesis', ''))}</td><td>{'Eligible for current runner' if item.get('eligible_for_current_runner') else 'Requires unavailable capability'}</td><td>Not executed</td></tr>"
+        for item in run.planning.get("scenarios", [])
+    ) or "<tr><td colspan='4'>No scenario plan was requested.</td></tr>"
     score = run.scoring.get("overall_score")
     score_text = f"{score}/100" if score is not None else "Not established"
     html_doc = f"""<!doctype html><html lang="en"><meta charset="utf-8"><title>BreakMyBot report {html.escape(run.id)}</title>
@@ -40,6 +44,7 @@ def generate(run: RunRecord, output_dir: Path) -> dict[str, str]:
 <h2>Executive summary</h2><p>Assessment of {html.escape(run.application_name or 'the connected target')} via {html.escape(run.method)} {html.escape(run.endpoint_path)}. Status: {html.escape(run.status)}. The result covers only observed black-box HTTP checks.</p>
 <h2>Category scorecard</h2><table><thead><tr><th>Category</th><th>Score</th><th>Coverage</th><th>Conclusive</th></tr></thead><tbody>{category_rows}</tbody></table>
 <h2>Findings</h2>{finding_rows}
+<h2>Scenario planning hypotheses</h2><table><thead><tr><th>Proposal</th><th>Hypothesis</th><th>Capability gate</th><th>Execution</th></tr></thead><tbody>{plan_rows}</tbody></table>
 <h2>Scenario inventory</h2><table><thead><tr><th>ID</th><th>Scenario</th><th>Category</th><th>Result</th><th>HTTP</th><th>Limitations</th></tr></thead><tbody>{scenario_rows}</tbody></table>
 <h2>Method and limitations</h2><p>Methodology: {html.escape(run.scoring.get('methodology', ''))}. The score describes only executed checks and is not a universal safety certification.</p>
 <p>Unsupported capabilities: {html.escape(', '.join(run.scoring.get('untested_capabilities', [])))}</p><small>Run {html.escape(run.id)} · {html.escape(run.created_at.isoformat())}</small></body></html>"""
