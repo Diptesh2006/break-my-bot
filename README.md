@@ -66,16 +66,17 @@ Methodology `breakmybot-score-v3` computes per-category pass ratios, then combin
 ## API
 
 - `GET /api/health`
+- `POST /api/projects` and `GET /api/projects`
 - `POST /api/targets/discover`
 - `POST /api/targets/validate`
 - `POST /api/runs`
-- `GET /api/runs` and `GET /api/runs/{id}`
+- `GET /api/runs?project_id=...` and `GET /api/runs/{id}`
 - `POST /api/runs/{id}/cancel`
 - `GET /api/runs/{id}/events` (SSE)
 - `GET /api/runs/{id}/report.{html|pdf|json}`
 - `GET /api/scoring/methodology`
 
-The local deployment supports one active worker process using SQLite leases; horizontal multi-worker scaling, PostgreSQL, user accounts, and dashboard authentication are not implemented in this release. The bundled dashboard displays persisted API data; keep it bound to loopback.
+Projects and their same-origin assessments are persisted in SQLite; the dashboard can filter by project and compare up to four stored runs from the same project or target. The local deployment supports one active worker process using SQLite leases; horizontal multi-worker scaling, PostgreSQL, user accounts, and dashboard authentication are not implemented in this release. Keep the bundled dashboard bound to loopback.
 
 For target authentication, put the secret in the BreakMyBot API and worker environment (for Compose, add a variable to the ignored local `.env` file), then enter only its variable name in the dashboard's Authentication section. Configure the header and scheme there as needed. Raw tokens are never entered in or stored by the browser.
 

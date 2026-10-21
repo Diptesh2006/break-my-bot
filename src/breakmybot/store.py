@@ -6,7 +6,7 @@ import sqlite3
 import time
 from pathlib import Path
 
-from .models import RunRecord
+from .models import ProjectRecord, RunRecord
 
 
 def data_dir() -> Path:
@@ -18,16 +18,39 @@ def data_dir() -> Path:
 def connect() -> sqlite3.Connection:
     db = sqlite3.connect(data_dir() / "breakmybot.sqlite3", timeout=10)
     db.execute("CREATE TABLE IF NOT EXISTS runs (id TEXT PRIMARY KEY, created_at TEXT NOT NULL, payload TEXT NOT NULL)")
+    db.execute("CREATE TABLE IF NOT EXISTS projects (id TEXT PRIMARY KEY, created_at TEXT NOT NULL, payload TEXT NOT NULL)")
     db.execute("CREATE TABLE IF NOT EXISTS events (sequence INTEGER PRIMARY KEY AUTOINCREMENT, run_id TEXT NOT NULL, event TEXT NOT NULL)")
     db.execute("CREATE TABLE IF NOT EXISTS jobs (run_id TEXT PRIMARY KEY, request TEXT NOT NULL, status TEXT NOT NULL, cancel_requested INTEGER NOT NULL DEFAULT 0, lease_until REAL, attempts INTEGER NOT NULL DEFAULT 0, created_at REAL NOT NULL)")
+    columns = {row[1] for row in db.execute("PRAGMA table_info(runs)")}
+    if "project_id" not in columns:
+        db.execute("ALTER TABLE runs ADD COLUMN project_id TEXT")
     return db
 
 
 def save(run: RunRecord) -> None:
     payload = json.dumps(run.model_dump(mode="json"), ensure_ascii=False)
     with connect() as db:
-        db.execute("INSERT INTO runs(id,created_at,payload) VALUES(?,?,?) ON CONFLICT(id) DO UPDATE SET payload=excluded.payload",
-                   (run.id, run.created_at.isoformat(), payload))
+        db.execute("INSERT INTO runs(id,created_at,payload,project_id) VALUES(?,?,?,?) ON CONFLICT(id) DO UPDATE SET payload=excluded.payload,project_id=excluded.project_id",
+                   (run.id, run.created_at.isoformat(), payload, run.project_id))
+
+
+def save_project(project: ProjectRecord) -> None:
+    payload = json.dumps(project.model_dump(mode="json"), ensure_ascii=False)
+    with connect() as db:
+        db.execute("INSERT INTO projects(id,created_at,payload) VALUES(?,?,?) ON CONFLICT(id) DO UPDATE SET payload=excluded.payload",
+                   (project.id, project.created_at.isoformat(), payload))
+
+
+def get_project(project_id: str) -> ProjectRecord | None:
+    with connect() as db:
+        row = db.execute("SELECT payload FROM projects WHERE id=?", (project_id,)).fetchone()
+    return ProjectRecord.model_validate_json(row[0]) if row else None
+
+
+def list_projects() -> list[ProjectRecord]:
+    with connect() as db:
+        rows = db.execute("SELECT payload FROM projects ORDER BY created_at DESC").fetchall()
+    return [ProjectRecord.model_validate_json(row[0]) for row in rows]
 
 
 def get(run_id: str) -> RunRecord | None:
@@ -36,9 +59,13 @@ def get(run_id: str) -> RunRecord | None:
     return RunRecord.model_validate_json(row[0]) if row else None
 
 
-def latest(limit: int = 50) -> list[RunRecord]:
+def latest(limit: int = 50, project_id: str | None = None) -> list[RunRecord]:
     with connect() as db:
-        rows = db.execute("SELECT payload FROM runs ORDER BY created_at DESC LIMIT ?", (limit,)).fetchall()
+        if project_id:
+            rows = db.execute("SELECT payload FROM runs WHERE project_id=? ORDER BY created_at DESC LIMIT ?",
+                              (project_id, limit)).fetchall()
+        else:
+            rows = db.execute("SELECT payload FROM runs ORDER BY created_at DESC LIMIT ?", (limit,)).fetchall()
     return [RunRecord.model_validate_json(row[0]) for row in rows]
 
 

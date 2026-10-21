@@ -1,0 +1,134 @@
+.project-panel {
+  padding: 19px;
+}
+
+.project-panel .panel-head {
+  margin-bottom: 14px;
+}
+
+.project-panel label {
+  display: block;
+  margin: 8px 0 5px;
+  color: #bbc5c9;
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.project-panel select,
+.project-create input {
+  width: 100%;
+  padding: 9px 10px;
+  color: var(--ink);
+  background: #0b1014;
+  border: 1px solid #28343b;
+  border-radius: 5px;
+}
+
+.project-create {
+  display: grid;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.project-create small {
+  overflow: hidden;
+  color: var(--dim);
+  font: 9px var(--mono);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.project-create .button {
+  justify-self: start;
+}
+
+.project-panel .scope-foot {
+  font-size: 9px;
+}
+
+.recent-entry {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  border-top: 1px solid var(--line-soft);
+}
+
+.recent-entry .recent-item {
+  min-width: 0;
+  border-top: 0;
+}
+
+.compare-choice {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  color: var(--dim);
+  font-size: 9px;
+  white-space: nowrap;
+}
+
+.compare-choice input {
+  accent-color: var(--accent);
+}
+
+.comparison-wrap {
+  margin-top: 10px;
+  border-top: 1px solid var(--line-soft);
+}
+
+.comparison-wrap .subhead {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.comparison-wrap .subhead small {
+  color: var(--dim);
+  font: 9px var(--mono);
+}
+
+.comparison-scroll {
+  overflow-x: auto;
+}
+
+.comparison-table {
+  width: 100%;
+  border-collapse: collapse;
+  color: var(--muted);
+  font-size: 10px;
+  text-align: left;
+}
+
+.comparison-table th,
+.comparison-table td {
+  max-width: 145px;
+  padding: 8px 6px;
+  border-bottom: 1px solid var(--line-soft);
+  overflow-wrap: anywhere;
+}
+
+.comparison-table th:first-child {
+  color: #bbc5c9;
+  white-space: nowrap;
+}
+
+.comparison-table thead button {
+  padding: 0;
+  border: 0;
+  color: var(--accent);
+  background: transparent;
+  font: 9px var(--mono);
+  cursor: pointer;
+}
+
+@media (max-width: 620px) {
+  .compare-choice {
+    font-size: 8px;
+  }
+
+  .comparison-table th,
+  .comparison-table td {
+    max-width: 110px;
+    padding: 7px 4px;
+  }
+}

@@ -17,6 +17,18 @@ class DiscoveryRequest(BaseModel):
     url: HttpUrl
 
 
+class ProjectCreate(BaseModel):
+    name: str = Field(min_length=1, max_length=120)
+    target_url: HttpUrl
+
+
+class ProjectRecord(BaseModel):
+    id: str = Field(default_factory=lambda: f"project-{uuid4().hex[:12]}")
+    name: str = Field(min_length=1, max_length=120)
+    target_url: str
+    created_at: datetime = Field(default_factory=utc_now)
+
+
 class EndpointCandidate(BaseModel):
     method: str
     path: str
@@ -62,6 +74,7 @@ class DiscoveryResult(BaseModel):
 
 class RunRequest(BaseModel):
     target_url: HttpUrl
+    project_id: str | None = Field(default=None, pattern=r"^project-[a-f0-9]{12}$")
     endpoint_path: str
     method: Literal["GET", "POST", "PUT", "PATCH"] = "POST"
     payload: dict[str, Any] = Field(default_factory=dict)
@@ -121,6 +134,7 @@ class RunRecord(BaseModel):
     id: str = Field(default_factory=lambda: f"run-{uuid4().hex[:12]}")
     status: Literal["CREATED", "RUNNING", "COMPLETED", "FAILED", "CANCELLED", "PARTIAL"] = "CREATED"
     target_url: str
+    project_id: str | None = None
     endpoint_path: str
     method: str
     request_payload: dict[str, Any] = Field(default_factory=dict)

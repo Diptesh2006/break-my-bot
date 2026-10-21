@@ -3,7 +3,8 @@
 import { FormEvent, useCallback, useEffect, useState } from "react";
 
 type Scenario = { scenario_id: string; name: string; category: string; status: string; severity: string; evidence: Record<string, unknown>; limitation?: string | null };
-type Run = { id: string; status: string; target_url: string; endpoint_path: string; created_at: string; scoring: { overall_score: number | null; coverage_percent: number; observed_weight_percent: number; critical_findings: number; scenario_counts: Record<string, number>; category_scores: Record<string, { score: number | null; coverage_percent: number; conclusive: number }> }; scenarios: Scenario[]; report_paths?: Record<string, string> };
+type Run = { id: string; project_id?: string | null; status: string; target_url: string; endpoint_path: string; application_name?: string | null; created_at: string; scoring: { overall_score: number | null; coverage_percent: number; observed_weight_percent: number; critical_findings: number; scenario_counts: Record<string, number>; category_scores: Record<string, { score: number | null; coverage_percent: number; conclusive: number }> }; scenarios: Scenario[]; report_paths?: Record<string, string> };
+type Project = { id: string; name: string; target_url: string; created_at: string };
 type Discovery = { reachable: boolean; openapi_found: boolean; application_name?: string; endpoints: Array<{ method: string; path: string; payload_template: Record<string, unknown> }>; diagnostics: string[] };
 
 async function api<T>(path: string, init?: RequestInit): Promise<T> {
@@ -25,6 +26,10 @@ export default function Home() {
   const [authEnv, setAuthEnv] = useState("");
   const [authHeader, setAuthHeader] = useState("Authorization");
   const [authScheme, setAuthScheme] = useState("Bearer");
+  const [projectName, setProjectName] = useState("");
+  const [selectedProjectId, setSelectedProjectId] = useState("");
+  const [projects, setProjects] = useState<Project[]>([]);
+  const [compareIds, setCompareIds] = useState<string[]>([]);
   const [discovery, setDiscovery] = useState<Discovery | null>(null);
   const [runs, setRuns] = useState<Run[]>([]);
   const [run, setRun] = useState<Run | null>(null);
@@ -35,14 +40,16 @@ export default function Home() {
 
   const refresh = useCallback(async () => {
     try {
-      const [healthResult, recent] = await Promise.all([api<{ status: string }>("/api/health"), api<Run[]>("/api/runs?limit=12")]);
+      const query = selectedProjectId ? `&project_id=${encodeURIComponent(selectedProjectId)}` : "";
+      const [healthResult, recent, savedProjects] = await Promise.all([api<{ status: string }>("/api/health"), api<Run[]>(`/api/runs?limit=12${query}`), api<Project[]>("/api/projects")]);
       setHealth(healthResult.status === "ok" ? "API online" : "API unavailable");
       setRuns(recent);
+      setProjects(savedProjects);
     } catch (e) {
       setHealth("API unavailable");
       setError(e instanceof Error ? e.message : "Could not connect to BreakMyBot API");
     }
-  }, []);
+  }, [selectedProjectId]);
 
   useEffect(() => { void refresh(); }, [refresh]);
 
@@ -59,6 +66,23 @@ export default function Home() {
     } catch (e) { setError(e instanceof Error ? e.message : "Discovery failed"); }
   }
 
+  async function createProject(event: FormEvent) {
+    event.preventDefault(); setError("");
+    try {
+      const created = await api<Project>("/api/projects", { method: "POST", body: JSON.stringify({ name: projectName, target_url: url }) });
+      setProjects((current) => [created, ...current]);
+      setProjectName(""); setCompareIds([]); setSelectedProjectId(created.id); setUrl(created.target_url);
+    } catch (e) { setError(e instanceof Error ? e.message : "Could not save project"); }
+  }
+
+  function toggleCompare(id: string) {
+    setCompareIds((current) => {
+      if (current.includes(id)) return current.filter((item) => item !== id);
+      if (current.length >= 4) { setError("Compare up to four assessments at a time."); return current; }
+      return [...current, id];
+    });
+  }
+
   async function start(event: FormEvent) {
     event.preventDefault(); setError("");
     let parsed: Record<string, unknown>;
@@ -66,7 +90,7 @@ export default function Home() {
     if (method !== "GET" && !window.confirm("Confirm this test invocation is safe and will not cause unwanted side effects.")) return;
     setBusy(true); setRun(null); setEvents([]);
     try {
-      const created = await api<{ run_id: string }>("/api/runs", { method: "POST", body: JSON.stringify({ target_url: url, endpoint_path: endpoint, method, payload: parsed, profile, expected_substring: expected || null, allow_repeated_post: false, auth_env: authEnv || null, auth_header: authHeader, auth_scheme: authScheme }) });
+      const created = await api<{ run_id: string }>("/api/runs", { method: "POST", body: JSON.stringify({ target_url: url, project_id: selectedProjectId || null, endpoint_path: endpoint, method, payload: parsed, profile, expected_substring: expected || null, allow_repeated_post: false, auth_env: authEnv || null, auth_header: authHeader, auth_scheme: authScheme }) });
       const stream = new EventSource(`/api/runs/${encodeURIComponent(created.run_id)}/events`);
       stream.onmessage = (message) => setEvents((current) => [...current.slice(-80), message.data]);
       stream.addEventListener("scenario.completed", (message) => setEvents((current) => [...current.slice(-80), (message as MessageEvent).data]));
@@ -93,6 +117,9 @@ export default function Home() {
   }
 
   const counts = run?.scoring.scenario_counts;
+  const compareRuns = runs.filter((item) => compareIds.includes(item.id));
+  const compareKey = (item: Run) => item.project_id || new URL(item.target_url).origin;
+  const comparisonCompatible = compareRuns.length < 2 || compareRuns.every((item) => compareKey(item) === compareKey(compareRuns[0]));
   return (
     <main className="shell">
       <header className="topbar"><a className="brand" href="#top"><span className="brand-mark">B</span><span>BREAKMYBOT<small>AI RELIABILITY LAB</small></span></a><div className="top-meta"><span className={health === "API online" ? "health-dot online" : "health-dot"} />{health}<span className="local-tag">LOCAL WORKSPACE</span></div></header>
@@ -113,7 +140,8 @@ export default function Home() {
           </form>
         </section>
         <aside className="side-column"><section className="panel scope-panel"><div className="panel-head"><div><div className="eyebrow">CURRENT SCOPE</div><h2>What gets measured</h2></div></div><ul className="scope-list"><li><span className="scope-check">✓</span><div><b>Black-box HTTP</b><small>Availability, response validity, latency</small></div><span className="scope-state">ACTIVE</span></li><li><span className="scope-check">◇</span><div><b>Tool fault injection</b><small>Requires opt-in target instrumentation</small></div><span className="scope-state muted-state">OPT-IN</span></li><li><span className="scope-check">◇</span><div><b>Memory evaluation</b><small>MemoryScope bridge and judge consent</small></div><span className="scope-state muted-state">OPT-IN</span></li></ul><p className="scope-foot">Unsupported capabilities remain visible; they are never counted as passes.</p></section>
-          <section className="panel recent-panel"><div className="panel-head"><div><div className="eyebrow">HISTORY</div><h2>Recent assessments</h2></div><button className="icon-button" onClick={refresh} aria-label="Refresh assessments">↻</button></div>{runs.length ? <div className="recent-list">{runs.map((item) => <button className="recent-item" key={item.id} onClick={() => openRun(item.id)}><span className="recent-status" data-status={item.status} /><span className="recent-copy"><b>{item.id}</b><small>{item.endpoint_path} · {new Date(item.created_at).toLocaleString()}</small></span><span className="recent-score">{item.scoring?.overall_score == null ? "—" : `${item.scoring.overall_score}`}</span></button>)}</div> : <p className="empty">No saved assessments yet.</p>}</section>
+          <section className="panel project-panel"><div className="panel-head"><div><div className="eyebrow">WORKSPACE</div><h2>Projects</h2></div></div><label htmlFor="project-select">History and assessment project</label><select id="project-select" value={selectedProjectId} onChange={(e) => { setSelectedProjectId(e.target.value); setCompareIds([]); const chosen = projects.find((project) => project.id === e.target.value); if (chosen) setUrl(chosen.target_url); }}><option value="">All targets · unassigned</option>{projects.map((project) => <option key={project.id} value={project.id}>{project.name}</option>)}</select><form className="project-create" onSubmit={createProject}><input aria-label="New project name" value={projectName} onChange={(e) => setProjectName(e.target.value)} placeholder="New project name" required maxLength={120} /><small>Uses the current target URL: {url}</small><button className="button subtle" type="submit">Save project</button></form><p className="scope-foot">Projects and assessments are stored locally in this BreakMyBot workspace.</p></section>
+          <section className="panel recent-panel"><div className="panel-head"><div><div className="eyebrow">HISTORY</div><h2>Recent assessments</h2></div><button className="icon-button" onClick={refresh} aria-label="Refresh assessments">↻</button></div>{runs.length ? <div className="recent-list">{runs.map((item) => <div className="recent-entry" key={item.id}><button className="recent-item" onClick={() => openRun(item.id)}><span className="recent-status" data-status={item.status} /><span className="recent-copy"><b>{item.application_name || item.target_url}</b><small>{item.id} · {item.endpoint_path} · {new Date(item.created_at).toLocaleString()}</small></span><span className="recent-score">{item.scoring?.overall_score == null ? "—" : `${item.scoring.overall_score}`}</span></button><label className="compare-choice"><input type="checkbox" checked={compareIds.includes(item.id)} onChange={() => toggleCompare(item.id)} />Compare</label></div>)}</div> : <p className="empty">No saved assessments yet.</p>}{compareRuns.length > 0 && <div className="comparison-wrap"><h3 className="subhead">Run comparison <small>Persisted results only</small></h3>{!comparisonCompatible ? <p className="empty">Choose runs from the same project or target to compare.</p> : compareRuns.length < 2 ? <p className="empty">Select one more run from this project or target.</p> : <div className="comparison-scroll"><table className="comparison-table"><thead><tr><th>Metric</th>{compareRuns.map((item) => <th key={item.id}><button type="button" onClick={() => openRun(item.id)}>{item.id}</button></th>)}</tr></thead><tbody><tr><th>Status</th>{compareRuns.map((item) => <td key={item.id}>{item.status}</td>)}</tr><tr><th>Score</th>{compareRuns.map((item) => <td key={item.id}>{item.scoring.overall_score == null ? "Not established" : `${item.scoring.overall_score}/100`}</td>)}</tr><tr><th>Coverage</th>{compareRuns.map((item) => <td key={item.id}>{item.scoring.coverage_percent}%</td>)}</tr><tr><th>Rubric observed</th>{compareRuns.map((item) => <td key={item.id}>{item.scoring.observed_weight_percent}%</td>)}</tr><tr><th>Critical findings</th>{compareRuns.map((item) => <td key={item.id}>{item.scoring.critical_findings}</td>)}</tr><tr><th>Target path</th>{compareRuns.map((item) => <td key={item.id}>{item.endpoint_path}</td>)}</tr></tbody></table></div>}</div>}</section>
         </aside>
       </div>
       {run && <section className="panel result-panel"><div className="panel-head"><div><div className="eyebrow">02 / EVIDENCE · {run.id}</div><h2>Assessment {run.status.toLowerCase()}</h2></div><div className="report-links">{["html", "pdf", "json"].map((format) => <a key={format} href={`/api/runs/${encodeURIComponent(run.id)}/report.${format}`} target="_blank" rel="noreferrer">{format.toUpperCase()} ↗</a>)}</div></div>

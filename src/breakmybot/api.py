@@ -5,13 +5,14 @@ import json
 import os
 from contextlib import asynccontextmanager
 from pathlib import Path
+from urllib.parse import urlsplit
 
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.responses import FileResponse, HTMLResponse, StreamingResponse
 from dotenv import load_dotenv
 
 from . import runner, scoring, store
-from .models import DiscoveryRequest, RunAccepted, RunRecord, RunRequest
+from .models import DiscoveryRequest, ProjectCreate, ProjectRecord, RunAccepted, RunRecord, RunRequest
 from .target import discover
 from .redaction import redact_payload
 
@@ -82,11 +83,34 @@ async def target_validate(request: DiscoveryRequest):
     return await target_discover(request)
 
 
+@app.post("/api/projects", response_model=ProjectRecord, status_code=201)
+def create_project(request: ProjectCreate):
+    name = request.name.strip()
+    if not name:
+        raise HTTPException(422, "Project name cannot be blank")
+    project = ProjectRecord(name=name, target_url=str(request.target_url).rstrip("/"))
+    store.save_project(project)
+    return project
+
+
+@app.get("/api/projects", response_model=list[ProjectRecord])
+def list_projects():
+    return store.list_projects()
+
+
 @app.post("/api/runs", response_model=RunAccepted, status_code=202)
 async def create_run(request: RunRequest):
+    if request.project_id:
+        project = store.get_project(request.project_id)
+        if not project:
+            raise HTTPException(404, "Project not found")
+        project_origin = urlsplit(project.target_url)
+        target_origin = urlsplit(str(request.target_url))
+        if (project_origin.scheme, project_origin.netloc) != (target_origin.scheme, target_origin.netloc):
+            raise HTTPException(422, "Assessment target origin must match the selected project's target")
     record = RunRecord(target_url=str(request.target_url), endpoint_path=request.endpoint_path,
         method=request.method, request_payload=redact_payload(request.payload),
-        application_name=request.application_name, profile=request.profile)
+        application_name=request.application_name, profile=request.profile, project_id=request.project_id)
     store.save(record)
     store.append_event(record.id, {"type": "run.created", "phase": "CREATED"})
     store.enqueue(record.id, request.model_dump(mode="json"))
@@ -94,8 +118,10 @@ async def create_run(request: RunRequest):
 
 
 @app.get("/api/runs")
-def list_runs(limit: int = Query(default=30, ge=1, le=100)):
-    return [_current_run(run) for run in store.latest(limit)]
+def list_runs(limit: int = Query(default=30, ge=1, le=100), project_id: str | None = None):
+    if project_id and not store.get_project(project_id):
+        raise HTTPException(404, "Project not found")
+    return [_current_run(run) for run in store.latest(limit, project_id)]
 
 
 def _current_run(run: RunRecord) -> dict:

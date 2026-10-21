@@ -1,4 +1,5 @@
 import json
+import sqlite3
 from pathlib import Path
 
 import pytest
@@ -8,7 +9,7 @@ from fastapi import FastAPI
 
 from breakmybot import runner, store
 from breakmybot.api import app as api_app
-from breakmybot.models import MemoryAssessment, MemoryCase, RunRecord, RunRequest, ScenarioResult
+from breakmybot.models import MemoryAssessment, MemoryCase, ProjectRecord, RunRecord, RunRequest, ScenarioResult
 from breakmybot.memoryscope import evaluate as evaluate_memory, supports_external_answer_evaluation
 from breakmybot.instrumentation import ToolFault, instrument, instrument_tool_calls
 from breakmybot.planner import mock_plan, plan
@@ -45,6 +46,57 @@ def test_sqlite_job_queue_persists_claim_cancellation_and_suppresses_stale_repla
     assert store.get(run.id).status == "FAILED"
     assert "replay was suppressed" in store.get(run.id).error
     assert store.claim_job() is None
+
+
+def test_project_and_run_association_survive_sqlite_restart(tmp_path, monkeypatch):
+    monkeypatch.setenv("BREAKMYBOT_DATA_DIR", str(tmp_path))
+    project = ProjectRecord(name="Support agent", target_url="http://localhost:8000")
+    store.save_project(project)
+    run = RunRecord(target_url="http://localhost:8000", endpoint_path="/api/chat", method="GET",
+        profile="quick", project_id=project.id)
+    store.save(run)
+
+    assert store.get_project(project.id) == project
+    assert store.list_projects() == [project]
+    assert store.latest(project_id=project.id) == [run]
+    assert store.latest(project_id="project-000000000000") == []
+
+
+def test_project_schema_migrates_existing_runs_without_losing_records(tmp_path, monkeypatch):
+    monkeypatch.setenv("BREAKMYBOT_DATA_DIR", str(tmp_path))
+    legacy = RunRecord(target_url="http://localhost:8000", endpoint_path="/api/chat", method="GET",
+        profile="quick")
+    payload = legacy.model_dump(mode="json")
+    payload.pop("project_id")
+    db = sqlite3.connect(tmp_path / "breakmybot.sqlite3")
+    db.execute("CREATE TABLE runs (id TEXT PRIMARY KEY, created_at TEXT NOT NULL, payload TEXT NOT NULL)")
+    db.execute("INSERT INTO runs VALUES(?,?,?)", (legacy.id, legacy.created_at.isoformat(),
+        json.dumps(payload)))
+    db.commit()
+    db.close()
+
+    assert store.latest() == [legacy]
+    with store.connect() as migrated:
+        columns = {row[1] for row in migrated.execute("PRAGMA table_info(runs)")}
+    assert "project_id" in columns
+
+
+@pytest.mark.asyncio
+async def test_project_api_filters_runs_and_rejects_cross_target_association(tmp_path, monkeypatch):
+    monkeypatch.setenv("BREAKMYBOT_DATA_DIR", str(tmp_path))
+    async with AsyncClient(transport=ASGITransport(app=api_app), base_url="http://test") as client:
+        created = await client.post("/api/projects", json={"name": "Support agent",
+            "target_url": "http://localhost:8000"})
+        assert created.status_code == 201
+        project_id = created.json()["id"]
+        response = await client.post("/api/runs", json={"target_url": "http://localhost:8000",
+            "project_id": project_id, "endpoint_path": "/api/chat", "method": "GET", "profile": "quick"})
+        assert response.status_code == 202
+        filtered = await client.get("/api/runs", params={"project_id": project_id})
+        assert [run["id"] for run in filtered.json()] == [response.json()["run_id"]]
+        mismatch = await client.post("/api/runs", json={"target_url": "http://localhost:8001",
+            "project_id": project_id, "endpoint_path": "/api/chat", "method": "GET", "profile": "quick"})
+        assert mismatch.status_code == 422
 
 
 @pytest.mark.asyncio
