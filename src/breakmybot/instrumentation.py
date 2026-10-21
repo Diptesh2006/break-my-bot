@@ -79,10 +79,10 @@ class ToolFaultController(AbstractAsyncContextManager["ToolFaultController"]):
         self.events.append({"type": "tool.call", "tool": tool_name, "call": call_number,
                             "fault_injected": fault is not None})
         try:
-            if inspect.iscoroutinefunction(tool):
-                result = await tool(*args, **kwargs)
-            else:
-                result = await asyncio.to_thread(tool, *args, **kwargs)
+            result = (await tool(*args, **kwargs) if inspect.iscoroutinefunction(tool)
+                      else await asyncio.to_thread(tool, *args, **kwargs))
+            if inspect.isawaitable(result):
+                result = await result
         except Exception as exc:
             self.events.append({"type": "tool.failed", "tool": tool_name, "call": call_number,
                                 "error_type": type(exc).__name__})

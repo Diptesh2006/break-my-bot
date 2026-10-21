@@ -63,6 +63,19 @@ async def test_instrumented_fault_can_be_configured_for_every_nth_call():
         "tool.call", "tool.completed", "fault.injected"]
 
 
+@pytest.mark.asyncio
+async def test_instrumented_async_callable_object_is_awaited():
+    class AsyncTool:
+        async def __call__(self, value):
+            return f"result:{value}"
+
+    controller = instrument_tool_calls()
+    async with controller:
+        result = await controller.invoke("lookup", AsyncTool(), "item")
+    assert result == "result:item"
+    assert controller.events[-1]["type"] == "tool.completed"
+
+
 def test_openapi_discovery_prefers_chat_and_builds_payload():
     spec = {"paths": {"/api/chat": {"post": {"summary": "Chat with the agent", "requestBody": {
         "content": {"application/json": {"schema": {"type": "object", "required": ["input"],
