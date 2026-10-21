@@ -8,6 +8,7 @@ from urllib.parse import urljoin, urlsplit, urlunsplit
 import httpx
 
 from .models import DiscoveryResult, EndpointCandidate
+from .redaction import redact_text
 
 HINTS = ("chat", "invoke", "agent", "ask", "generate", "completion", "query")
 
@@ -180,7 +181,8 @@ async def preflight(url: str, path: str, method: str, payload: dict, *, docker_m
         docker_mode=docker_mode, headers=headers)
     return {"reachable": True, "status_code": status, "successful": 200 <= status < 300,
         "duration_ms": round(duration, 2), "content_type": content_type,
-        "response_excerpt": body[:500]}
+        "response_excerpt": redact_text(body, payload,
+            tuple(value for value in (headers or {}).values() if value))[:500]}
 
 
 async def invoke(url: str, path: str, method: str, payload: dict, timeout: float, *, docker_mode: bool = False,

@@ -16,7 +16,7 @@ from breakmybot.planner import mock_plan, plan
 from breakmybot.reports import generate
 from breakmybot.redaction import redact_payload, redact_text
 from breakmybot.scoring import calculate
-from breakmybot.target import identify_endpoints, validate_target
+from breakmybot.target import identify_endpoints, preflight as run_preflight, validate_target
 
 
 def test_target_policy_rejects_public_literal_ip():
@@ -144,6 +144,17 @@ def test_response_redaction_hides_echoed_credentials_and_bearer_tokens():
     response = 'echo=private-value Authorization: Bearer abc.def.ghi'
     assert redact_text(response, {"api_key": "private-value"}) == (
         'echo=[REDACTED] Authorization: Bearer [REDACTED]')
+
+
+@pytest.mark.asyncio
+async def test_target_preflight_redacts_echoed_payload_and_auth_token(monkeypatch):
+    async def echo_target(*_args, **_kwargs):
+        return 200, 'echo=private-value Authorization: Bearer abc.def.ghi', 1.2, "text/plain"
+
+    monkeypatch.setattr("breakmybot.target.invoke", echo_target)
+    result = await run_preflight("http://127.0.0.1:8000", "/chat", "POST",
+        {"api_key": "private-value"}, headers={"Authorization": "Bearer abc.def.ghi"})
+    assert result["response_excerpt"] == "echo=[REDACTED] Authorization: Bearer [REDACTED]"
 
 
 @pytest.mark.asyncio
