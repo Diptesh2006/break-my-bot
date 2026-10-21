@@ -45,6 +45,24 @@ async def test_instrumented_tool_timeout_is_explicit_and_recorded():
         await controller.invoke("lookup", lambda: "inactive")
 
 
+@pytest.mark.asyncio
+async def test_instrumented_fault_can_be_configured_for_every_nth_call():
+    calls = 0
+
+    def lookup():
+        nonlocal calls
+        calls += 1
+        return "real result"
+
+    controller = instrument_tool_calls(ToolFault(tool="lookup", kind="empty_response", every_n_calls=2))
+    async with controller:
+        assert await controller.invoke("lookup", lookup) == "real result"
+        assert await controller.invoke("lookup", lookup) == ""
+    assert calls == 1
+    assert [event["type"] for event in controller.events] == [
+        "tool.call", "tool.completed", "fault.injected"]
+
+
 def test_openapi_discovery_prefers_chat_and_builds_payload():
     spec = {"paths": {"/api/chat": {"post": {"summary": "Chat with the agent", "requestBody": {
         "content": {"application/json": {"schema": {"type": "object", "required": ["input"],

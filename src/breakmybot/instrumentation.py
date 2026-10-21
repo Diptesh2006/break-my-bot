@@ -14,7 +14,7 @@ from contextlib import AbstractAsyncContextManager
 from dataclasses import dataclass, field
 from typing import Any, Literal
 
-FaultKind = Literal["timeout", "exception", "empty_response", "malformed_response", "delay", "intermittent"]
+FaultKind = Literal["timeout", "exception", "empty_response", "malformed_response", "delay"]
 
 
 @dataclass(frozen=True)
@@ -23,10 +23,10 @@ class ToolFault:
     kind: FaultKind
     value: Any = None
     delay_seconds: float = 0
-    every_n_calls: int = 2
+    every_n_calls: int = 1
 
     def __post_init__(self) -> None:
-        if self.kind not in {"timeout", "exception", "empty_response", "malformed_response", "delay", "intermittent"}:
+        if self.kind not in {"timeout", "exception", "empty_response", "malformed_response", "delay"}:
             raise ValueError("unsupported tool fault kind")
         if not self.tool.strip():
             raise ValueError("tool name must not be empty")
@@ -92,7 +92,7 @@ class ToolFaultController(AbstractAsyncContextManager["ToolFaultController"]):
 
     @staticmethod
     def _matches(fault: ToolFault, call_number: int) -> bool:
-        return fault.kind != "intermittent" or call_number % fault.every_n_calls == 0
+        return call_number % fault.every_n_calls == 0
 
 
 def instrument_tool_calls(*faults: ToolFault) -> ToolFaultController:
