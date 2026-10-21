@@ -455,6 +455,43 @@ async def test_api_root_points_to_bundled_dashboard_and_health_routes():
 
 
 @pytest.mark.asyncio
+async def test_target_preflight_invokes_one_baseline_and_reports_observed_response(tmp_path, monkeypatch):
+    monkeypatch.setenv("BREAKMYBOT_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("BREAKMYBOT_DOCKER_MODE", "true")
+    monkeypatch.setenv("PREFLIGHT_TOKEN", "preflight-secret")
+    observed = {}
+
+    async def fake_preflight(url, path, method, payload, *, docker_mode=False, headers=None):
+        observed.update(url=url, path=path, method=method, payload=payload,
+            docker_mode=docker_mode, headers=headers)
+        return {"reachable": True, "status_code": 200, "successful": True,
+            "duration_ms": 12.3, "content_type": "application/json", "response_excerpt": '{"ok":true}'}
+
+    monkeypatch.setattr("breakmybot.api.preflight", fake_preflight)
+    async with AsyncClient(transport=ASGITransport(app=api_app), base_url="http://test") as client:
+        response = await client.post("/api/targets/preflight", json={"target_url": "http://localhost:8000",
+            "endpoint_path": "/api/chat", "method": "POST", "payload": {"input": "hello"},
+            "profile": "quick", "auth_env": "PREFLIGHT_TOKEN"})
+    assert response.status_code == 200
+    assert response.json()["status_code"] == 200
+    assert response.json()["duration_ms"] == 12.3
+    assert observed == {"url": "http://localhost:8000/", "path": "/api/chat", "method": "POST",
+        "payload": {"input": "hello"}, "docker_mode": True,
+        "headers": {"Authorization": "Bearer preflight-secret"}}
+
+
+@pytest.mark.asyncio
+async def test_target_preflight_fails_closed_when_auth_environment_variable_missing(monkeypatch):
+    monkeypatch.delenv("MISSING_TARGET_TOKEN", raising=False)
+    async with AsyncClient(transport=ASGITransport(app=api_app), base_url="http://test") as client:
+        response = await client.post("/api/targets/preflight", json={"target_url": "http://localhost:8000",
+            "endpoint_path": "/api/chat", "method": "POST", "profile": "quick",
+            "auth_env": "MISSING_TARGET_TOKEN"})
+    assert response.status_code == 422
+    assert "credential environment variable is missing" in response.json()["detail"]
+
+
+@pytest.mark.asyncio
 async def test_runner_executes_and_persists_observed_scenarios(tmp_path: Path, monkeypatch):
     monkeypatch.setenv("BREAKMYBOT_DATA_DIR", str(tmp_path))
     monkeypatch.setenv("BREAKMYBOT_DOCKER_MODE", "false")

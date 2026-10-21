@@ -13,7 +13,7 @@ from dotenv import load_dotenv
 
 from . import runner, scoring, store
 from .models import DiscoveryRequest, ProjectCreate, ProjectRecord, RunAccepted, RunRecord, RunRequest
-from .target import discover
+from .target import discover, preflight
 from .redaction import redact_payload
 
 load_dotenv(Path.cwd() / ".env")
@@ -81,6 +81,23 @@ async def target_discover(request: DiscoveryRequest):
 @app.post("/api/targets/validate")
 async def target_validate(request: DiscoveryRequest):
     return await target_discover(request)
+
+
+@app.post("/api/targets/preflight")
+async def target_preflight(request: RunRequest):
+    try:
+        headers = None
+        if request.auth_env:
+            token = os.getenv(request.auth_env)
+            if not token:
+                raise ValueError("Configured target credential environment variable is missing")
+            headers = {request.auth_header: f"{request.auth_scheme} {token}".strip()}
+        result = await preflight(str(request.target_url), request.endpoint_path, request.method,
+            request.payload, docker_mode=os.getenv("BREAKMYBOT_DOCKER_MODE", "false").lower() == "true",
+            headers=headers)
+        return result
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc
 
 
 @app.post("/api/projects", response_model=ProjectRecord, status_code=201)

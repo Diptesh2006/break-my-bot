@@ -169,6 +169,20 @@ async def discover(url: str, *, docker_mode: bool = False) -> DiscoveryResult:
             application_name=app_name, endpoints=endpoints, diagnostics=diagnostics)
 
 
+async def preflight(url: str, path: str, method: str, payload: dict, *, docker_mode: bool = False,
+                    headers: dict[str, str] | None = None) -> dict:
+    """Invoke exactly one user-authorized baseline from the runner's network namespace."""
+    if not path.startswith("/") or path.startswith("//") or "?" in path or "#" in path:
+        raise ValueError("Endpoint path must be an absolute path without query or fragment")
+    if method not in {"GET", "POST", "PUT", "PATCH"}:
+        raise ValueError("Unsupported endpoint method")
+    status, body, duration, content_type = await invoke(url, path, method, payload, 15,
+        docker_mode=docker_mode, headers=headers)
+    return {"reachable": True, "status_code": status, "successful": 200 <= status < 300,
+        "duration_ms": round(duration, 2), "content_type": content_type,
+        "response_excerpt": body[:500]}
+
+
 async def invoke(url: str, path: str, method: str, payload: dict, timeout: float, *, docker_mode: bool = False,
                  headers: dict[str, str] | None = None) -> tuple[int, str, float, str]:
     base = docker_resolve_url(url) if docker_mode else url

@@ -122,6 +122,16 @@ def test(
     if method != "GET" and not Confirm.ask("Confirm endpoint and payload are safe for a test invocation", default=False):
         console.print("Cancelled before sending the target request.")
         raise typer.Exit(code=4)
+    console.print("Running one baseline request from the BreakMyBot execution environment…")
+    baseline = api_request("POST", "/api/targets/preflight", json={"target_url": url,
+        "endpoint_path": endpoint, "method": method, "payload": payload, "profile": "quick",
+        "auth_env": auth_env})
+    if not baseline["successful"]:
+        console.print(f"[red]Baseline invocation returned HTTP {baseline['status_code']}.[/red]")
+        console.print("Review the endpoint, payload, target logs, and authentication before running scenarios.")
+        raise typer.Exit(code=3)
+    console.print(f"[green]OK[/green] Baseline returned HTTP {baseline['status_code']} "
+        f"in {baseline['duration_ms']} ms ({baseline['content_type'] or 'unknown content type'})")
     if allow_repeated_post and not Confirm.ask("Confirm repeated calls cannot create unwanted side effects", default=False):
         raise typer.Exit(code=4)
     instrumented_assessment = None
