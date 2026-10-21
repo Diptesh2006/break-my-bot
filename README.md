@@ -116,6 +116,8 @@ For a deterministic failing control, also start the demo with `DEMO_UNSAFE_TOOL_
 
 The example `examples/demo-agent/tool-faults.json` also includes an ordered two-tool chain for `/api/chat/chain`: it injects an exception in `customer_context`, then a timeout in `refund_policy`, and verifies the safe support fallback. The automated suite covers this target-side session/provenance/cleanup flow.
 
+The demo also includes a resettable in-process memory fixture for grounded stale-answer checks. To seed stale state, run `Invoke-RestMethod -Method Post -Uri http://localhost:8001/api/memory/seed -ContentType 'application/json' -Body '{"value":"Customers may request a refund within 30 days of purchase."}'`, then use `breakmybot test --url http://localhost:8001 --endpoint /api/chat/sse --payload-json '{"messages":[{"role":"user","content":"What is the refund window?"}]}' --profile quick --expected '14 days'`. The expected invariant should fail against the seeded 30-day memory. Reset with `Invoke-RestMethod -Method Post -Uri http://localhost:8001/api/memory/reset`. This local fixture proves a stale answer is observable; actual MemoryScope judge evaluation still requires its separately configured service and explicit consent. The demo endpoints are unauthenticated and must stay isolated on localhost.
+
 ## Development
 
 ```powershell

@@ -24,6 +24,14 @@ class SseChatRequest(BaseModel):
     messages: list[MessageItem]
 
 
+class MemorySeedRequest(BaseModel):
+    value: str
+
+
+CURRENT_REFUND_POLICY = "Customers may request a refund within 14 days of purchase."
+demo_memory = {"refund_policy": CURRENT_REFUND_POLICY}
+
+
 @app.get("/health")
 def health():
     return {"status": "ok"}
@@ -67,8 +75,8 @@ async def chat_chain():
 @app.post("/api/chat/sse")
 def chat_sse(request: SseChatRequest):
     question = request.messages[-1].content.casefold() if request.messages else ""
-    answer = ("Customers may request a refund within 14 days of purchase."
-              if "refund" in question else "Hello. I am the deterministic BreakMyBot test agent.")
+    answer = (demo_memory["refund_policy"] if "refund" in question
+              else "Hello. I am the deterministic BreakMyBot test agent.")
 
     async def events():
         event = {"choices": [{"delta": {"content": answer}}]}
@@ -76,3 +84,16 @@ def chat_sse(request: SseChatRequest):
         yield "data: [DONE]\n\n"
 
     return StreamingResponse(events(), media_type="text/event-stream")
+
+
+@app.post("/api/memory/seed")
+def seed_demo_memory(request: MemorySeedRequest):
+    """Set isolated demo memory to model current, stale, or contradictory state."""
+    demo_memory["refund_policy"] = request.value
+    return {"status": "seeded"}
+
+
+@app.post("/api/memory/reset")
+def reset_demo_memory():
+    demo_memory["refund_policy"] = CURRENT_REFUND_POLICY
+    return {"status": "reset"}
