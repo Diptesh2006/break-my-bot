@@ -127,7 +127,17 @@ def test(
             raise typer.BadParameter("payload-json must be valid JSON") from exc
     elif template:
         payload = template
-        console.print(f"Schema-derived sample payload: {json.dumps(payload, ensure_ascii=False)}")
+        console.print(f"Suggested request payload: {json.dumps(payload, ensure_ascii=False)}")
+        if Confirm.ask("Use this suggested JSON payload? Choose no to enter your own", default=True):
+            pass
+        else:
+            payload_text = Prompt.ask("Request JSON payload")
+            try:
+                payload = json.loads(payload_text)
+            except json.JSONDecodeError as exc:
+                raise typer.BadParameter("payload JSON must be valid JSON") from exc
+            if not isinstance(payload, dict):
+                raise typer.BadParameter("payload JSON must be an object")
     elif method == "GET":
         payload = {}
     else:
@@ -144,7 +154,10 @@ def test(
             f"Authorize {concurrency_requests} simultaneous requests to this target? This may increase load.",
             default=False):
         concurrency_requests = 0
-    if method != "GET" and not Confirm.ask("Confirm endpoint and payload are safe for a test invocation", default=False):
+    if method != "GET":
+        console.print(f"Target invocation: {method} {url.rstrip('/')}{endpoint}")
+        console.print(f"Request JSON: {json.dumps(payload, ensure_ascii=False)}")
+    if method != "GET" and not Confirm.ask("Confirm this exact endpoint and payload are safe for a test invocation", default=False):
         console.print("Cancelled before creating the assessment.")
         raise typer.Exit(code=4)
     console.print("The assessment worker will perform the baseline invocation and record its response.")
