@@ -20,13 +20,13 @@ The initial repository contains only a short README. It has no backend, CLI, das
 
 Reusable modules include a FastAPI API, deterministic scenario and workload types, a simulation orchestrator, seeded fault rules, event persistence/replay within process memory, SSE run telemetry, deterministic metrics and reports, and a Next.js cockpit. The current fault injector sits at Turbulence's own Concentrate adapter boundary. Its provider and action safety scenarios are simulations; it cannot inject failures into an arbitrary external AI agent. Its README explicitly notes that run history and agent safety state are in-memory and its configured SQLAlchemy database is not wired into those stores.
 
-Integration decision: use Turbulence as a separately operated subsystem behind a future adapter contract. Do not import it through local filesystem paths or count its internal demo runs as target-agent tests. A real outbound dependency proxy or instrumented-agent adapter is needed before its fault injection can be attributed to an external target. No Turbulence source files were changed during this audit.
+Integration decision: use Turbulence as a separately operated subsystem behind an explicit scope contract. Do not import it through local filesystem paths or count its internal demo runs as target-agent tests. A real outbound dependency proxy or instrumented-agent adapter is needed before its fault injection can be attributed to an external target. No Turbulence source files were changed at the time of the initial audit; a later capability-manifest route was added in commit `6b0bf13` without touching the pre-existing Concentrate client/test edits or untracked web config.
 
 ### MemoryScope
 
 The current beta accepts a real external SSE chat endpoint and user-supplied cases with approved references and expected behavior. It performs deterministic literal/citation checks, followed by a required nRouter semantic judge with quote grounding. Results and evidence are persisted in local SQLite. It is a single-user loopback beta and does not currently implement session seed/reset adapters or persistent-memory lifecycle tests. Older synthetic memory benchmarks are archived and not mounted by the current API.
 
-Integration decision: use its documented API as an optional separately operated evaluator when nRouter credentials, explicit consent, SSE-compatible target endpoint, and reference cases are provided. Memory tests remain `UNSUPPORTED` in the base black-box profile unless the target exposes a supported memory-control adapter. Never transfer its internal/legacy demo scores into BreakMyBot runs. No MemoryScope source files were changed during this audit.
+Integration decision: use its documented API as an optional separately operated evaluator when nRouter credentials, explicit consent, SSE-compatible target endpoint, and reference cases are provided. Memory tests remain `UNSUPPORTED` in the base black-box profile unless the target exposes a supported memory-control adapter. Never transfer its internal/legacy demo scores into BreakMyBot runs. No MemoryScope source files were changed at the time of the initial audit; a later external-answer capability manifest was added in commit `1258e66`.
 
 ## Integration plan and limits
 
@@ -39,3 +39,9 @@ Current risks: localhost routing differs between host and Docker; Docker-side re
 - BreakMyBot: build the first functional vertical slice: safe HTTP discovery and payload selection, baseline and bounded repeat/latency checks, persisted runs, deterministic score/coverage separation, CLI, portable HTML/JSON reports, Docker connectivity setup, demo target, and developer documentation.
 - Turbulence: no direct modifications planned for the initial slice; expose an integration boundary and reuse its verified capabilities only when they can operate against the connected target.
 - MemoryScope: no direct modifications planned for the initial slice; document and optionally call its existing API when its prerequisites are explicitly met.
+
+## Implementation status update
+
+The initial BreakMyBot vertical slice is implemented and pushed to its `main` branch. It now also supports opt-in FastAPI target instrumentation for session-scoped tool faults; the run only scores an instrumented scenario when the target confirms the matching injection event, cleanup succeeds, and a response invariant is supplied. Methodology is `breakmybot-score-v2` and reports list observed scopes. The standalone demo demonstrates actual timeout recovery.
+
+MemoryScope's `memoryscope-answer-evaluation-v1` contract is consumed by the BreakMyBot bridge; it explicitly advertises persistent memory lifecycle and tenant-isolation checks as unsupported. Turbulence's `breakmybot-turbulence-v1` contract advertises that its current simulator cannot inject faults into arbitrary external targets. These subsystem commits are local and were not pushed. A localhost CLI-to-agent end-to-end run was verified; Docker engine availability and live nRouter calls remain unverified.

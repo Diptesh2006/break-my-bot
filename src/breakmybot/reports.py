@@ -24,7 +24,7 @@ def generate(run: RunRecord, output_dir: Path) -> dict[str, str]:
         for s in run.scenarios
     )
     category_rows = "".join(
-        f"<tr><td>{html.escape(name)}</td><td>{item['score']}/100</td><td>{item['coverage_percent']}%</td><td>{item['conclusive']}</td></tr>"
+        f"<tr><td>{html.escape(name)}</td><td>{html.escape(str(item['score']) + '/100' if item['score'] is not None else 'Not established')}</td><td>{item['coverage_percent']}%</td><td>{item['conclusive']}</td></tr>"
         for name, item in run.scoring.get("category_scores", {}).items()
     ) or "<tr><td colspan='4'>No category has enough conclusive observations yet.</td></tr>"
     finding_rows = "".join(
@@ -37,11 +37,12 @@ def generate(run: RunRecord, output_dir: Path) -> dict[str, str]:
     ) or "<tr><td colspan='4'>No scenario plan was requested.</td></tr>"
     score = run.scoring.get("overall_score")
     score_text = f"{score}/100" if score is not None else "Not established"
+    observed_scopes = ", ".join(run.scoring.get("observed_scopes", [])) or "none"
     html_doc = f"""<!doctype html><html lang="en"><meta charset="utf-8"><title>BreakMyBot report {html.escape(run.id)}</title>
 <style>body{{font:16px system-ui;max-width:1000px;margin:40px auto;padding:0 24px;color:#18212b}}h1{{font-size:34px}}.score{{font-size:32px;color:#a43129}}table{{border-collapse:collapse;width:100%;margin-top:20px}}th,td{{border:1px solid #ccd2d8;padding:10px;text-align:left}}th{{background:#edf1f5}}small{{color:#59636e}}</style>
 <body><h1>BREAKMYBOT</h1><p>AI RELIABILITY ASSESSMENT</p><h2>{html.escape(run.application_name or 'AI application')}</h2><p>Assessment date: {html.escape(run.created_at.isoformat())}</p><p>{html.escape(run.target_url)}{html.escape(run.endpoint_path)}</p>
 <p class="score">{score_text}</p><p>Coverage: {run.scoring.get('coverage_percent', 0)}%</p><p>{html.escape(run.scoring.get('warning', ''))}</p>
-<h2>Executive summary</h2><p>Assessment of {html.escape(run.application_name or 'the connected target')} via {html.escape(run.method)} {html.escape(run.endpoint_path)}. Status: {html.escape(run.status)}. The result covers only observed black-box HTTP checks.</p>
+<h2>Executive summary</h2><p>Assessment of {html.escape(run.application_name or 'the connected target')} via {html.escape(run.method)} {html.escape(run.endpoint_path)}. Status: {html.escape(run.status)}. Observed scopes: {html.escape(observed_scopes)}.</p>
 <h2>Category scorecard</h2><table><thead><tr><th>Category</th><th>Score</th><th>Coverage</th><th>Conclusive</th></tr></thead><tbody>{category_rows}</tbody></table>
 <h2>Findings</h2>{finding_rows}
 <h2>Scenario planning hypotheses</h2><table><thead><tr><th>Proposal</th><th>Hypothesis</th><th>Capability gate</th><th>Execution</th></tr></thead><tbody>{plan_rows}</tbody></table>
@@ -55,7 +56,20 @@ def generate(run: RunRecord, output_dir: Path) -> dict[str, str]:
              Paragraph(html.escape(run.application_name or "AI application"), styles["Heading2"]),
              Paragraph(html.escape(run.target_url + run.endpoint_path), styles["BodyText"]),
              Paragraph(f"Score: {score_text} · Coverage: {run.scoring.get('coverage_percent', 0)}%", styles["Heading2"]),
+             Paragraph("Observed scopes: " + html.escape(observed_scopes), styles["BodyText"]),
              Paragraph(html.escape(run.scoring.get("warning", "")), styles["BodyText"]), Spacer(1, 12)]
+    category_data = [["Category", "Score", "Coverage", "Conclusive"]]
+    category_data.extend([
+        [name, f"{item['score']}/100" if item["score"] is not None else "Not established",
+         f"{item['coverage_percent']}%", str(item["conclusive"])]
+        for name, item in run.scoring.get("category_scores", {}).items()
+    ])
+    if len(category_data) > 1:
+        category_table = Table(category_data, repeatRows=1, colWidths=[200, 95, 90, 75])
+        category_table.setStyle(TableStyle([("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#263746")),
+            ("TEXTCOLOR", (0, 0), (-1, 0), colors.white), ("GRID", (0, 0), (-1, -1), 0.4, colors.grey),
+            ("VALIGN", (0, 0), (-1, -1), "TOP"), ("FONTSIZE", (0, 0), (-1, -1), 8)]))
+        story.extend([Paragraph("Category scorecard", styles["Heading2"]), category_table, Spacer(1, 16)])
     data = [["Scenario", "Category", "Result", "HTTP"]] + [[s.name[:40], s.category[:28], s.status, str(s.http_status or "—")] for s in run.scenarios]
     table = Table(data, repeatRows=1, colWidths=[190, 140, 100, 55])
     table.setStyle(TableStyle([("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#263746")),

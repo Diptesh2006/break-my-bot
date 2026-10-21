@@ -4,12 +4,13 @@ from pathlib import Path
 import pytest
 import httpx
 from httpx import ASGITransport, AsyncClient
+from fastapi import FastAPI
 
 from breakmybot import runner, store
 from breakmybot.api import app as api_app
 from breakmybot.models import MemoryAssessment, MemoryCase, RunRecord, RunRequest, ScenarioResult
 from breakmybot.memoryscope import evaluate as evaluate_memory, supports_external_answer_evaluation
-from breakmybot.instrumentation import ToolFault, instrument_tool_calls
+from breakmybot.instrumentation import ToolFault, instrument, instrument_tool_calls
 from breakmybot.planner import mock_plan, plan
 from breakmybot.reports import generate
 from breakmybot.redaction import redact_payload, redact_text
@@ -76,6 +77,104 @@ async def test_instrumented_async_callable_object_is_awaited():
     assert controller.events[-1]["type"] == "tool.completed"
 
 
+@pytest.mark.asyncio
+async def test_instrumentation_control_session_arms_injects_observes_and_cleans_up():
+    target = FastAPI()
+    token = "integration-test-token-1234567890"
+    controller = instrument(target, token=token, enabled=True)
+
+    @target.post("/chat")
+    async def chat():
+        try:
+            value = await controller.invoke("catalog", lambda: "real result")
+        except TimeoutError:
+            value = "safe fallback"
+        return {"answer": value}
+
+    async with AsyncClient(transport=ASGITransport(app=target), base_url="http://test") as client:
+        assert (await client.get("/__breakmybot__/capabilities")).json()["contract"] == "breakmybot-instrumentation-v1"
+        assert (await client.put("/__breakmybot__/sessions/test-run", json={"tool": "catalog", "kind": "timeout"})).status_code == 401
+        headers = {"Authorization": f"Bearer {token}"}
+        armed = await client.put("/__breakmybot__/sessions/test-run", json={"tool": "catalog", "kind": "timeout"}, headers=headers)
+        assert armed.status_code == 200 and armed.json()["armed"]
+        response = await client.post("/chat", headers={"X-BreakMyBot-Session": "test-run"})
+        assert response.json()["answer"] == "safe fallback"
+        events = await client.get("/__breakmybot__/sessions/test-run/events", headers=headers)
+        assert events.json()["events"][0]["type"] == "fault.injected"
+        cleanup = await client.delete("/__breakmybot__/sessions/test-run", headers=headers)
+        assert cleanup.status_code == 200 and cleanup.json()["cleaned_up"]
+    assert controller._sessions == {}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("expected", "expected_state"), [
+    ("safe fallback", "PASSED"),
+    ("unsafe response", "VERIFIED_FAILURE"),
+])
+async def test_runner_scores_confirmed_instrumented_fault_with_explicit_invariant(
+    tmp_path, monkeypatch, expected, expected_state
+):
+    target = FastAPI()
+    token = "integration-test-token-1234567890"
+    controller = instrument(target, token=token, enabled=True)
+
+    @target.post("/chat")
+    async def chat():
+        try:
+            answer = await controller.invoke("catalog", lambda: "real lookup")
+        except TimeoutError:
+            answer = "safe fallback"
+        return {"answer": answer}
+
+    original_client = httpx.AsyncClient
+
+    def control_client_factory(*args, **kwargs):
+        return original_client(*args, **kwargs, transport=ASGITransport(app=target))
+
+    async def target_invoke(url, path, method, payload, timeout, *, docker_mode=False, headers=None):
+        async with original_client(transport=ASGITransport(app=target), base_url=url) as client:
+            response = await client.request(method, path, json=payload, headers=headers)
+        return response.status_code, response.text, 1.0, response.headers.get("content-type", "")
+
+    monkeypatch.setattr("breakmybot.instrumentation.httpx.AsyncClient", control_client_factory)
+    monkeypatch.setattr(runner, "invoke", target_invoke)
+    monkeypatch.setenv("BREAKMYBOT_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("BREAKMYBOT_DOCKER_MODE", "false")
+    monkeypatch.setenv("BREAKMYBOT_INSTRUMENTATION_TOKEN", token)
+    request = RunRequest(target_url="http://127.0.0.1:8001", endpoint_path="/chat", method="POST",
+        profile="quick", allow_repeated_post=True,
+        instrumented_assessment={"auth_env": "BREAKMYBOT_INSTRUMENTATION_TOKEN", "faults": [{
+            "tool": "catalog", "kind": "timeout", "expected_substring": expected}]})
+    run = RunRecord(target_url=str(request.target_url), endpoint_path=request.endpoint_path,
+        method=request.method, profile=request.profile)
+    store.save(run)
+
+    result = await runner.execute(run.id, request)
+
+    tool_result = next(item for item in result.scenarios if item.category == "Tool reliability")
+    assert tool_result.status == expected_state, tool_result.model_dump_json()
+    assert tool_result.evidence["fault_injected"] is True
+    assert tool_result.evidence["cleanup_succeeded"] is True
+    assert tool_result.evidence["expected_substring_passed"] is (expected_state == "PASSED")
+    assert controller._sessions == {}
+    assert token not in result.model_dump_json()
+
+
+@pytest.mark.asyncio
+async def test_instrumented_control_token_requires_https_for_non_loopback_target(monkeypatch):
+    monkeypatch.setenv("BREAKMYBOT_INSTRUMENTATION_TOKEN", "x" * 40)
+    request = RunRequest(target_url="http://192.0.2.10:8443", endpoint_path="/chat", method="GET",
+        instrumented_assessment={"auth_env": "BREAKMYBOT_INSTRUMENTATION_TOKEN", "faults": [{
+            "tool": "lookup", "kind": "timeout"}]})
+    run = RunRecord(target_url=str(request.target_url), endpoint_path=request.endpoint_path,
+        method=request.method, profile=request.profile)
+
+    results = await runner._run_instrumented_scenarios(run, request, 10, None, None)
+
+    assert results[0].status == "SETUP_ERROR"
+    assert "require HTTPS" in results[0].limitation
+
+
 def test_openapi_discovery_prefers_chat_and_builds_payload():
     spec = {"paths": {"/api/chat": {"post": {"summary": "Chat with the agent", "requestBody": {
         "content": {"application/json": {"schema": {"type": "object", "required": ["input"],
@@ -97,6 +196,33 @@ def test_score_excludes_unsupported_from_passes_and_keeps_coverage_separate():
     assert score["overall_score"] == 67
     assert score["coverage_percent"] == 75
     assert score["scenario_counts"]["UNSUPPORTED"] == 1
+    assert score["category_scores"]["Memory"]["score"] is None
+    assert score["category_scores"]["Memory"]["coverage_percent"] == 0
+
+
+def test_score_lists_observed_instrumentation_and_removes_it_from_untested():
+    run = RunRecord(target_url="http://localhost:8000", endpoint_path="/chat", method="POST", profile="standard")
+    run.scenarios = [
+        ScenarioResult(scenario_id="http", name="HTTP", category="HTTP reliability", status="PASSED"),
+        ScenarioResult(scenario_id="response", name="Response", category="Response validity", status="PASSED"),
+        ScenarioResult(scenario_id="latency", name="Latency", category="Latency", status="PASSED"),
+        ScenarioResult(scenario_id="instrumented-tool-1", name="Tool timeout", category="Tool reliability",
+            status="PASSED", evidence={"fault_injected": True, "cleanup_succeeded": True}),
+    ]
+    score = calculate(run)
+    assert score["score_label"] == "Observed reliability score"
+    assert "instrumented tool faults" in score["observed_scopes"]
+    assert "internal tool fault injection" not in score["untested_capabilities"]
+
+
+def test_setup_errors_do_not_claim_an_observed_scope():
+    run = RunRecord(target_url="http://localhost:8000", endpoint_path="/chat", method="POST", profile="standard")
+    run.scenarios = [ScenarioResult(scenario_id="setup", name="setup", category="HTTP reliability",
+        status="SETUP_ERROR"), ScenarioResult(scenario_id="memory", name="memory", category="Memory integrity",
+        status="UNSUPPORTED")]
+    result = calculate(run)
+    assert result["observed_scopes"] == []
+    assert result["category_scores"]["HTTP reliability"]["score"] is None
 
 
 def test_report_outputs_are_portable_and_include_limitations(tmp_path: Path):

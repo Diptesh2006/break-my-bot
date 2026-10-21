@@ -25,6 +25,19 @@ class EndpointCandidate(BaseModel):
     payload_template: dict[str, Any] = Field(default_factory=dict)
 
 
+class InstrumentedToolFault(BaseModel):
+    tool: str = Field(min_length=1, max_length=100)
+    kind: Literal["timeout", "exception", "empty_response", "malformed_response", "delay"]
+    expected_substring: str | None = Field(default=None, max_length=1000)
+    delay_seconds: float = Field(default=0, ge=0, le=30)
+    every_n_calls: int = Field(default=1, ge=1, le=100)
+
+
+class InstrumentedAssessment(BaseModel):
+    auth_env: str = Field(pattern=r"^BREAKMYBOT_INSTRUMENTATION_[A-Z0-9_]+$")
+    faults: list[InstrumentedToolFault] = Field(min_length=1, max_length=10)
+
+
 class DiscoveryResult(BaseModel):
     target_url: str
     reachable: bool
@@ -47,6 +60,7 @@ class RunRequest(BaseModel):
     auth_header: str = Field(default="Authorization", pattern=r"^[A-Za-z0-9-]{1,64}$")
     auth_scheme: str = Field(default="Bearer", max_length=24, pattern=r"^[A-Za-z0-9_-]*$")
     memory_assessment: "MemoryAssessment | None" = None
+    instrumented_assessment: InstrumentedAssessment | None = None
     use_nrouter_planner: bool = False
     max_latency_seconds: float = Field(default=10, gt=0, le=120)
 

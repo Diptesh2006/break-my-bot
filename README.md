@@ -57,9 +57,9 @@ Loopback targets are allowed by default. Explicit test hosts must be listed in `
 - `standard`: three invocations when GET, or when repeated POST has been explicitly authorized; otherwise one POST invocation.
 - `deep`: up to eight invocations under the same repeat safety gate.
 
-Every response is captured with its HTTP status, content type, bounded body excerpt, and measured latency. Assertions are deterministic: successful HTTP response, user-provided expected substring, and user-configured latency ceiling. Unsupported memory, internal tool-fault, and security-boundary categories are listed as unsupported, never passed.
+Every response is captured with its HTTP status, content type, bounded body excerpt, and measured latency. Assertions are deterministic: successful HTTP response, user-provided expected substring, and user-configured latency ceiling. Instrumented tool-fault checks are available only through the target's explicit authenticated adapter; persistent memory lifecycle and security-boundary categories remain unsupported, never passed.
 
-Methodology `breakmybot-score-v1` computes the pass ratio over conclusive executed checks only after at least three conclusive scenarios. Coverage is the share of executed and explicitly unsupported checks that produced conclusive results. An absent score is reported as **Not established**. A score summarizes only these observed HTTP checks; it is not a safety probability, benchmark certification, or universal reliability claim.
+Methodology `breakmybot-score-v2` computes the pass ratio over conclusive, evidence-backed executed scenarios only after at least three conclusive scenarios. Depending on opt-in integrations, observed scopes can include black-box HTTP, target-instrumented tool faults, and MemoryScope-grounded answer checks; each report lists the scopes actually observed. Coverage is separate from score. An absent score is reported as **Not established**. A score is not a safety probability, benchmark certification, or universal reliability claim.
 
 ## API
 
@@ -79,18 +79,17 @@ SQLite run records and report artifacts are stored under `data/`. The current AP
 
 The reference audit is in [`docs/reference-audit.md`](docs/reference-audit.md). Turbulence's seeded faults currently wrap its own Concentrate adapter and cannot affect an arbitrary target. MemoryScope tests a real external SSE endpoint against supplied references but requires an nRouter judge model and explicit consent; its current beta does not cover persistent memory lifecycle. BreakMyBot does not import their code via local paths or transfer their internal demo scores. Adapter contracts and these limits are documented in [`docs/integration-boundaries.md`](docs/integration-boundaries.md).
 
-Agent developers can opt into the in-process tool fault SDK for test fixtures:
+Agent developers can opt into session-scoped tool fault injection. Install BreakMyBot in the target agent's Python environment and wire tool calls through its returned controller. The control API is installed only when `enabled=True`, requires a bearer token of at least 32 characters, and only applies faults to a request carrying the armed `X-BreakMyBot-Session` header:
 
 ```python
-from breakmybot.instrumentation import ToolFault, instrument_tool_calls
+import os
+from breakmybot.instrumentation import instrument
 
-faults = instrument_tool_calls(ToolFault(tool="catalog", kind="timeout"))
-async with faults:
-    result = await faults.invoke("catalog", catalog_lookup, "item-42")
-    # faults.events contains explicit injection/call evidence
+tool_faults = instrument(app, token=os.environ["BREAKMYBOT_INSTRUMENTATION_TOKEN"], enabled=True)
+result = await tool_faults.invoke("catalog", catalog_lookup, "item-42")
 ```
 
-The target must route its own tool calls through this controller. BreakMyBot does not remotely arm it yet, so these faults are not included in normal HTTP assessment scores.
+Set the same high-entropy `BREAKMYBOT_INSTRUMENTATION_TOKEN` in the target process and BreakMyBot API environment. Add a JSON case array such as `examples/demo-agent/tool-faults.json`, then run `breakmybot test ... --instrumented-faults examples/demo-agent/tool-faults.json --allow-repeated-post` and confirm the target invocation, repeat authorization, and fault arming prompts. Each fault runs in an isolated session, the target returns injection events, and the runner attempts deletion even when arming or invocation fails. A fault counts as a pass/failure only if injection was observed, cleanup succeeded, and an explicit expected substring was supplied (or the target request itself failed); otherwise it remains inconclusive/setup error. Sessions expire after five minutes and are bounded to 100 active sessions. Do not expose the control API to untrusted networks.
 
 An optional MemoryScope API bridge is available for grounded answer evaluation. Configure `MEMORYSCOPE_API_URL` for the separately running service, then pass an approved case array with `--memory-cases cases.json`. BreakMyBot asks for consent before sending reference cases and target answers to the nRouter judge. Configure the MemoryScope service's `NROUTER_API_KEY`, `NROUTER_JUDGE_MODEL`, and target-origin allowlist there. This evaluates answers against references; it does not test persistent-memory lifecycle or internal memory controls.
 
@@ -106,6 +105,8 @@ python -m uvicorn app:app --app-dir examples/demo-agent --host 0.0.0.0 --port 80
 ```
 
 Then assess it with `breakmybot test --url http://localhost:8001`. The demo is a deterministic fixture, not a real external LLM, and its report identifies only HTTP behavior.
+
+To try instrumented recovery, start the demo with `BREAKMYBOT_INSTRUMENTATION_ENABLED=true` and a shared `BREAKMYBOT_INSTRUMENTATION_TOKEN` (32+ characters) in both the agent and BreakMyBot API environments. Then run `breakmybot test --url http://localhost:8001 --endpoint /api/chat --payload-json '{"message":"refund policy"}' --instrumented-faults examples/demo-agent/tool-faults.json --allow-repeated-post`. This executes a real target request with an injected `refund_policy` timeout and checks the explicit `contact support` fallback invariant.
 
 ## Development
 

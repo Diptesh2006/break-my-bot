@@ -161,5 +161,5 @@ def download_report(run_id: str, format: str):
 
 @app.get("/api/scoring/methodology")
 def scoring_methodology():
-    return {"version": "breakmybot-score-v1", "score_scope": "observed HTTP checks only", "coverage_is_separate": True,
+    return {"version": "breakmybot-score-v2", "score_scope": "evidence-backed executed scenarios, including opt-in instrumented tool faults and grounded answer evaluations", "coverage_is_separate": True,
         "unsupported_tests_are_not_passes": True, "minimum_conclusive_scenarios": 3}

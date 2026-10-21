@@ -47,7 +47,7 @@ def init():
 def doctor():
     """Check API connectivity."""
     result = api_request("GET", "/api/health")
-    console.print(f"✓ BreakMyBot API reachable ({result['status']}) at {API}")
+    console.print(f"[green]OK[/green] BreakMyBot API reachable ({result['status']}) at {API}")
 
 
 @app.command()
@@ -62,12 +62,14 @@ def test(
     memory_cases: Path | None = typer.Option(None, "--memory-cases", help="JSON array of approved MemoryScope reference cases"),
     memory_agent_path: str | None = typer.Option(None, "--memory-agent-path", help="SSE chat path on the same target origin"),
     memory_auth_env: str | None = typer.Option(None, "--memory-auth-env", help="MemoryScope agent auth environment variable name"),
+    instrumented_faults: Path | None = typer.Option(None, "--instrumented-faults", help="JSON file of opt-in tool fault scenarios"),
+    instrumentation_auth_env: str = typer.Option("BREAKMYBOT_INSTRUMENTATION_TOKEN", "--instrumentation-auth-env", help="Environment variable containing the target instrumentation control token"),
     plan_with_nrouter: bool = typer.Option(False, "--plan-with-nrouter", help="Opt in to send endpoint metadata to the configured nRouter planner"),
 ):
     """Discover and run bounded black-box HTTP checks."""
     if profile not in {"quick", "standard", "deep"}:
         raise typer.BadParameter("profile must be quick, standard, or deep")
-    console.print("[bold]💥 BREAKMYBOT[/bold]\nWe break your AI so your users don't have to.\n")
+    console.print("[bold]BREAKMYBOT[/bold]\nWe break your AI so your users don't have to.\n")
     url = url or Prompt.ask("AI application URL")
     discovered = api_request("POST", "/api/targets/discover", json={"url": url})
     if not discovered["reachable"]:
@@ -76,9 +78,9 @@ def test(
             console.print(f"  {item}")
         console.print("For a host application in Docker, bind it to 0.0.0.0 and allow host.docker.internal access.")
         raise typer.Exit(code=3)
-    console.print("✓ Application reachable from BreakMyBot")
+    console.print("[green]OK[/green] Application reachable from BreakMyBot")
     if discovered["openapi_found"]:
-        console.print("✓ API specification detected")
+        console.print("[green]OK[/green] API specification detected")
     choices = discovered["endpoints"]
     selected = next((row for row in choices if endpoint and row["path"] == endpoint), None)
     if not endpoint and len(choices) == 1:
@@ -111,6 +113,23 @@ def test(
         raise typer.Exit(code=4)
     if allow_repeated_post and not Confirm.ask("Confirm repeated calls cannot create unwanted side effects", default=False):
         raise typer.Exit(code=4)
+    instrumented_assessment = None
+    if instrumented_faults:
+        if method != "GET" and not allow_repeated_post:
+            raise typer.BadParameter("Instrumented fault scenarios add target calls; use --allow-repeated-post and confirm safety")
+        try:
+            fault_cases = json.loads(instrumented_faults.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as exc:
+            raise typer.BadParameter("instrumented-faults must be a readable JSON array") from exc
+        if not isinstance(fault_cases, list):
+            raise typer.BadParameter("instrumented-faults must contain a JSON array")
+        if not 1 <= len(fault_cases) <= 10:
+            raise typer.BadParameter("instrumented-faults must contain between 1 and 10 cases")
+        if not Confirm.ask("Arm the target's opt-in BreakMyBot tool-fault controller for these tests?", default=False):
+            console.print("Skipping instrumented scenarios; continuing with black-box checks only.")
+            instrumented_assessment = None
+        else:
+            instrumented_assessment = {"auth_env": instrumentation_auth_env, "faults": fault_cases}
     memory_assessment = None
     if memory_cases:
         try:
@@ -127,7 +146,8 @@ def test(
     created = api_request("POST", "/api/runs", json={"target_url": url, "endpoint_path": endpoint,
         "method": method, "payload": payload, "profile": profile, "application_name": discovered.get("application_name"),
         "expected_substring": expected, "allow_repeated_post": allow_repeated_post, "auth_env": auth_env,
-        "memory_assessment": memory_assessment, "use_nrouter_planner": plan_with_nrouter})
+        "memory_assessment": memory_assessment, "instrumented_assessment": instrumented_assessment,
+        "use_nrouter_planner": plan_with_nrouter})
     run_id = created["run_id"]
     console.print(f"Assessment started: {run_id}")
     while True:
@@ -139,12 +159,12 @@ def test(
         console.print(f"[red]Assessment {run['status'].lower()}[/red]")
         raise typer.Exit(code=3)
     score = run["scoring"].get("overall_score")
-    console.print(f"\n[bold]💥 BREAKMYBOT — TEST {run['status']}[/bold]")
-    console.print(f"HTTP reliability score: {score}/100" if score is not None else "HTTP reliability score: Not established")
+    console.print(f"\n[bold]BREAKMYBOT - TEST {run['status']}[/bold]")
+    console.print(f"Observed reliability score: {score}/100" if score is not None else "Observed reliability score: Not established")
     console.print(f"Coverage: {run['scoring'].get('coverage_percent', 0)}%")
     console.print(f"Scenario planner: {run.get('planning', {}).get('status', 'not requested')} ({len(run.get('planning', {}).get('scenarios', []))} proposals; none automatically executed)")
     counts = run["scoring"]["scenario_counts"]
-    console.print(f"Passed: {counts['PASSED']} · Failed: {counts['VERIFIED_FAILURE']} · Unsupported: {counts['UNSUPPORTED']}")
+    console.print(f"Passed: {counts['PASSED']} | Failed: {counts['VERIFIED_FAILURE']} | Unsupported: {counts['UNSUPPORTED']}")
     console.print(run["scoring"]["warning"])
     console.print("Reports:")
     for kind, path in run["report_paths"].items():
