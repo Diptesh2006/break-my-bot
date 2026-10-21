@@ -42,3 +42,17 @@ def redact_text(value: str, payload: Any, extra_secrets: tuple[str, ...] = ()) -
     for secret in sorted(secrets, key=len, reverse=True):
         result = result.replace(secret, "[REDACTED]")
     return result
+
+
+def redact_evidence(value: Any, extra_secrets: tuple[str, ...] = (), key: str = "") -> Any:
+    """Sanitize untrusted nested evidence before persisting or publishing it."""
+    if any(part in key.casefold() for part in SENSITIVE_KEY_PARTS):
+        return "[REDACTED]"
+    if isinstance(value, dict):
+        return {str(child_key): redact_evidence(child_value, extra_secrets, str(child_key))
+                for child_key, child_value in value.items()}
+    if isinstance(value, list):
+        return [redact_evidence(item, extra_secrets, key) for item in value]
+    if isinstance(value, str):
+        return redact_text(value, {}, extra_secrets)
+    return value

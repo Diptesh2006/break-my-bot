@@ -14,7 +14,7 @@ from breakmybot.memoryscope import evaluate as evaluate_memory, supports_externa
 from breakmybot.instrumentation import ToolFault, instrument, instrument_tool_calls
 from breakmybot.planner import mock_plan, plan
 from breakmybot.reports import generate
-from breakmybot.redaction import redact_payload, redact_text
+from breakmybot.redaction import redact_evidence, redact_payload, redact_text
 from breakmybot.scoring import calculate
 from breakmybot.target import identify_endpoints, preflight as run_preflight, validate_target
 
@@ -138,6 +138,13 @@ async def test_worker_processes_and_acknowledges_a_queued_run(tmp_path, monkeypa
 def test_payload_redaction_hides_credentials_recursively():
     assert redact_payload({"messages": [{"content": "safe", "api_key": "do-not-store"}]}) == {
         "messages": [{"content": "safe", "api_key": "[REDACTED]"}]}
+
+
+def test_nested_untrusted_evidence_redacts_secret_keys_and_bearer_values():
+    observed = redact_evidence({"answer": "Authorization: Bearer abc.def.ghi",
+        "judge": {"api_key": "nrouter-secret", "note": "safe"}}, ("nrouter-secret",))
+    assert observed == {"answer": "Authorization: Bearer [REDACTED]",
+        "judge": {"api_key": "[REDACTED]", "note": "safe"}}
 
 
 def test_response_redaction_hides_echoed_credentials_and_bearer_tokens():
@@ -642,9 +649,10 @@ async def test_memoryscope_bridge_imports_only_contract_backed_external_case_res
     manifest = {"contract": "memoryscope-answer-evaluation-v1", "capabilities": {
         "external_agent_answer_evaluation": True}}
     run = {"id": "memory-run-1", "status": "completed", "results": [{
-        "name": "refund", "status": "pass", "answer": "Refunds within 14 days.",
+        "name": "refund", "status": "pass", "answer": "Refunds within 14 days. Authorization: Bearer target.secret.value",
         "checks": [{"check": "required_literal", "passed": True}],
-        "judge": {"verdict": "pass", "answer_quote": "14 days", "reference_quote": "14 days"},
+        "judge": {"verdict": "pass", "answer_quote": "14 days", "reference_quote": "14 days",
+            "api_key": "judge-secret-value"},
         "answer_latency_ms": 12.5}]}
 
     def respond(request):
@@ -672,6 +680,7 @@ async def test_memoryscope_bridge_imports_only_contract_backed_external_case_res
     monkeypatch.setattr("breakmybot.memoryscope.httpx.AsyncClient", client_factory)
     monkeypatch.setattr("breakmybot.memoryscope.asyncio.sleep", no_wait)
     monkeypatch.setenv("MEMORYSCOPE_API_URL", "http://127.0.0.1:8002")
+    monkeypatch.setenv("NROUTER_API_KEY", "judge-secret-value")
     request = RunRequest(target_url="http://127.0.0.1:8001", endpoint_path="/api/chat", method="POST",
         payload={"message": "hello"}, application_name="support")
     config = MemoryAssessment(agent_path="/api/chat/sse", cases=[MemoryCase(name="refund",
@@ -683,6 +692,8 @@ async def test_memoryscope_bridge_imports_only_contract_backed_external_case_res
     assert len(results) == 1
     assert results[0].status == "PASSED"
     assert results[0].evidence["judge"]["verdict"] == "pass"
+    assert results[0].evidence["answer"].endswith("Authorization: Bearer [REDACTED]")
+    assert results[0].evidence["judge"]["api_key"] == "[REDACTED]"
 
 
 def test_memoryscope_contract_accepts_only_advertised_answer_evaluation():

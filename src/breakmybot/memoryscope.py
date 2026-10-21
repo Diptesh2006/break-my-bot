@@ -8,6 +8,7 @@ from urllib.parse import urlsplit, urlunsplit
 import httpx
 
 from .models import MemoryAssessment, RunRequest, ScenarioResult
+from .redaction import redact_evidence
 from .target import docker_resolve_url, validate_target
 
 
@@ -85,6 +86,9 @@ async def evaluate(request: RunRequest, config: MemoryAssessment, cancel: asynci
                         state = {"pass": "PASSED", "fail": "VERIFIED_FAILURE", "inconclusive": "INCONCLUSIVE",
                                  "error": "SETUP_ERROR"}.get(source_status, "INCONCLUSIVE")
                         evidence = {key: item.get(key) for key in ("answer", "checks", "judge", "answer_latency_ms") if key in item}
+                        local_secrets = tuple(value for value in (os.getenv(config.auth_env) if config.auth_env else None,
+                            os.getenv("NROUTER_API_KEY")) if value)
+                        evidence = redact_evidence(evidence, local_secrets)
                         mapped.append(ScenarioResult(scenario_id=f"memoryscope-{index+1}",
                             name=item.get("name", f"Reference case {index+1}"), category="Output correctness",
                             status=state, severity="medium" if state == "VERIFIED_FAILURE" else "info",
