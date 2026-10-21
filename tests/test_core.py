@@ -14,6 +14,7 @@ from breakmybot.memoryscope import evaluate as evaluate_memory, supports_externa
 from breakmybot.instrumentation import ToolFault, instrument, instrument_tool_calls
 from breakmybot.planner import mock_plan, plan
 from breakmybot.reports import generate
+from breakmybot.target import docker_resolve_url
 from breakmybot.redaction import redact_evidence, redact_payload, redact_text
 from breakmybot.scoring import calculate
 from breakmybot.target import (identify_endpoints, identify_health_endpoints, payload_from_operation,
@@ -727,6 +728,12 @@ def test_setup_errors_do_not_claim_an_observed_scope():
     result = calculate(run)
     assert result["observed_scopes"] == []
     assert result["category_scores"]["HTTP reliability"]["score"] is None
+
+
+@pytest.mark.parametrize("host", ["localhost", "127.0.0.1", "[::1]"])
+def test_docker_loopback_translation_preserves_target_path_without_query_or_fragment(host):
+    resolved = docker_resolve_url(f"http://{host}:8000/api/chat?token=unsafe#fragment")
+    assert resolved == "http://host.docker.internal:8000/api/chat"
 
 
 def test_report_outputs_are_portable_and_include_limitations(tmp_path: Path):

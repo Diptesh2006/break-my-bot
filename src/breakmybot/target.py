@@ -61,7 +61,7 @@ def docker_resolve_url(url: str) -> str:
         netloc = "host.docker.internal"
         if parsed.port:
             netloc += f":{parsed.port}"
-        return urlunsplit((parsed.scheme, netloc, parsed.path, parsed.query, ""))
+        return urlunsplit((parsed.scheme, netloc, parsed.path, "", ""))
     return url
 
 
