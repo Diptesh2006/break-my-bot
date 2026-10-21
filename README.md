@@ -14,7 +14,7 @@ Start the BreakMyBot API and local storage:
 docker compose up -d --build
 ```
 
-The API binds to `127.0.0.1:8000`; a separate worker claims durable jobs from the shared SQLite database. Queued runs survive API restarts. Swagger docs are at `http://127.0.0.1:8000/docs`.
+The API binds to `127.0.0.1:8000`; a separate worker claims durable jobs from the shared SQLite database. Queued runs survive API restarts. Worker leases are renewed while a run executes; an expired in-flight run is marked failed instead of automatically replayed, avoiding duplicate target side effects. Swagger docs are at `http://127.0.0.1:8000/docs`.
 
 Install the CLI from this checkout (Python 3.11+):
 

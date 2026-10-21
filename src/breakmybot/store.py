@@ -64,7 +64,7 @@ def claim_job(lease_seconds: int = 900) -> tuple[str, dict] | None:
     now = time.time()
     with connect() as db:
         db.execute("BEGIN IMMEDIATE")
-        row = db.execute("SELECT run_id,request FROM jobs WHERE status='QUEUED' OR (status='RUNNING' AND lease_until<?) ORDER BY created_at LIMIT 1", (now,)).fetchone()
+        row = db.execute("SELECT run_id,request FROM jobs WHERE status='QUEUED' ORDER BY created_at LIMIT 1").fetchone()
         if not row:
             return None
         db.execute("UPDATE jobs SET status='RUNNING',lease_until=?,attempts=attempts+1 WHERE run_id=?",
@@ -97,35 +97,23 @@ def job_cancel_requested(run_id: str) -> bool:
     return bool(row and row[0])
 
 
-def requeue_stale_jobs() -> None:
+def expire_stale_jobs() -> None:
+    """Fail expired in-flight work rather than replaying possibly side-effecting requests."""
     now = time.time()
     with connect() as db:
-        db.execute("UPDATE jobs SET status='QUEUED',lease_until=NULL WHERE status='RUNNING' AND lease_until<?", (now,))
+        rows = db.execute("SELECT run_id FROM jobs WHERE status='RUNNING' AND lease_until<?", (now,)).fetchall()
+        for (run_id,) in rows:
+            row = db.execute("SELECT payload FROM runs WHERE id=?", (run_id,)).fetchone()
+            if row:
+                run = RunRecord.model_validate_json(row[0])
+                if run.status in {"CREATED", "RUNNING"}:
+                    from datetime import datetime, timezone
+                    run.status = "FAILED"
+                    run.error = "Worker lease expired; automatic replay was suppressed to avoid duplicate target side effects."
+                    run.completed_at = datetime.now(timezone.utc)
+                    db.execute("UPDATE runs SET payload=? WHERE id=?",
+                               (json.dumps(run.model_dump(mode="json"), ensure_ascii=False), run_id))
+                    db.execute("INSERT INTO events(run_id,event) VALUES(?,?)",
+                               (run_id, json.dumps({"type": "run.failed", "phase": "FAILED", "reason": "worker_lease_expired"})))
+            db.execute("UPDATE jobs SET status='FAILED',lease_until=NULL WHERE run_id=?", (run_id,))
 
-
-def recover_queued_runs() -> None:
-    """Restore interrupted RUNNING records to CREATED before a durable retry."""
-    with connect() as db:
-        rows = db.execute("SELECT r.id,r.payload FROM runs r JOIN jobs j ON j.run_id=r.id WHERE j.status='QUEUED'").fetchall()
-    for run_id, payload in rows:
-        run = RunRecord.model_validate_json(payload)
-        if run.status == "RUNNING":
-            run.status = "CREATED"
-            run.error = None
-            save(run)
-            append_event(run_id, {"type": "run.requeued", "phase": "CREATED", "reason": "worker_lease_expired"})
-
-
-def recover_interrupted() -> None:
-    """Mark work lost on a single-process API restart as failed, never successful."""
-    with connect() as db:
-        rows = db.execute("SELECT payload FROM runs").fetchall()
-    for (payload,) in rows:
-        run = RunRecord.model_validate_json(payload)
-        if run.status in {"CREATED", "RUNNING"}:
-            from datetime import datetime, timezone
-            run.status = "FAILED"
-            run.error = "API restarted before this assessment completed; rerun to collect new evidence."
-            run.completed_at = datetime.now(timezone.utc)
-            save(run)
-            append_event(run.id, {"type": "run.failed", "phase": "FAILED", "reason": "process_restart"})

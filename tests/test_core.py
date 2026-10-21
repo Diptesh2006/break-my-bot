@@ -28,7 +28,7 @@ def test_target_policy_rejects_query_string_credentials():
         validate_target("http://localhost:8000/?token=secret")
 
 
-def test_sqlite_job_queue_persists_claim_cancellation_and_lease_recovery(tmp_path, monkeypatch):
+def test_sqlite_job_queue_persists_claim_cancellation_and_suppresses_stale_replay(tmp_path, monkeypatch):
     monkeypatch.setenv("BREAKMYBOT_DATA_DIR", str(tmp_path))
     run = RunRecord(target_url="http://localhost:8000", endpoint_path="/chat", method="GET", profile="quick")
     store.save(run)
@@ -40,8 +40,10 @@ def test_sqlite_job_queue_persists_claim_cancellation_and_lease_recovery(tmp_pat
     assert store.job_cancel_requested(run.id) is True
     with store.connect() as db:
         db.execute("UPDATE jobs SET lease_until=0 WHERE run_id=?", (run.id,))
-    assert store.claim_job()[0] == run.id
-    store.acknowledge_job(run.id)
+        db.execute("UPDATE runs SET payload=? WHERE id=?", (run.model_copy(update={"status": "RUNNING"}).model_dump_json(), run.id))
+    store.expire_stale_jobs()
+    assert store.get(run.id).status == "FAILED"
+    assert "replay was suppressed" in store.get(run.id).error
     assert store.claim_job() is None
 
 
@@ -55,6 +57,30 @@ async def test_create_run_enqueues_without_running_in_api_process(tmp_path, monk
     claimed = store.claim_job()
     assert accepted.run_id == claimed[0]
     assert RunRequest.model_validate(claimed[1]).endpoint_path == "/chat"
+
+
+@pytest.mark.asyncio
+async def test_worker_processes_and_acknowledges_a_queued_run(tmp_path, monkeypatch):
+    from breakmybot import worker
+
+    monkeypatch.setenv("BREAKMYBOT_DATA_DIR", str(tmp_path))
+    request = RunRequest(target_url="http://localhost:8000", endpoint_path="/chat", method="GET", profile="quick")
+    run = RunRecord(target_url=str(request.target_url), endpoint_path=request.endpoint_path,
+        method=request.method, profile=request.profile)
+    store.save(run)
+    store.enqueue(run.id, request.model_dump(mode="json"))
+
+    async def fake_execute(run_id, _request, _cancel):
+        record = store.get(run_id)
+        record.status = "COMPLETED"
+        store.save(record)
+        return record
+
+    monkeypatch.setattr(worker.runner, "execute", fake_execute)
+    assert await worker.process_one_job() is True
+    assert await worker.process_one_job() is False
+    with store.connect() as db:
+        assert db.execute("SELECT status FROM jobs WHERE run_id=?", (run.id,)).fetchone()[0] == "DONE"
 
 
 def test_payload_redaction_hides_credentials_recursively():

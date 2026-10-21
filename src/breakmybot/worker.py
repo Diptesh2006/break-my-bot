@@ -14,43 +14,48 @@ from pathlib import Path
 load_dotenv(Path.cwd() / ".env")
 
 
-async def run_worker(poll_seconds: float = 0.5) -> None:
-    store.requeue_stale_jobs()
-    store.recover_queued_runs()
-    while True:
-        claimed = store.claim_job()
-        if claimed is None:
-            await asyncio.sleep(poll_seconds)
-            continue
-        run_id, payload = claimed
-        store.recover_queued_runs()
-        cancel_event = asyncio.Event()
+async def process_one_job() -> bool:
+    store.expire_stale_jobs()
+    claimed = store.claim_job()
+    if claimed is None:
+        return False
+    run_id, payload = claimed
+    cancel_event = asyncio.Event()
 
-        async def monitor_cancel() -> None:
-            while not cancel_event.is_set():
-                if store.job_cancel_requested(run_id):
-                    cancel_event.set()
-                    return
-                store.renew_job_lease(run_id)
-                await asyncio.sleep(5)
+    async def monitor_cancel() -> None:
+        while not cancel_event.is_set():
+            if store.job_cancel_requested(run_id):
+                cancel_event.set()
+                return
+            store.renew_job_lease(run_id)
+            await asyncio.sleep(5)
 
-        monitor = asyncio.create_task(monitor_cancel())
-        try:
-            await runner.execute(run_id, RunRequest.model_validate(payload), cancel_event)
-        except Exception:
-            # A hard/unexpected runner exception remains leased; after the worker exits,
-            # another worker can reclaim it when the lease expires.
-            raise
-        finally:
-            monitor.cancel()
+    monitor = asyncio.create_task(monitor_cancel())
+    try:
+        await runner.execute(run_id, RunRequest.model_validate(payload), cancel_event)
+    except Exception:
+        from datetime import datetime, timezone
         record = store.get(run_id)
-        if record and record.status in {"COMPLETED", "FAILED", "CANCELLED", "PARTIAL"}:
-            store.acknowledge_job(run_id)
-        else:
-            # The request process is no longer executing this job. Let the lease expire
-            # instead of recording a false completion; recovery examines the run payload.
-            with store.connect() as db:
-                db.execute("UPDATE jobs SET lease_until=0 WHERE run_id=?", (run_id,))
+        if record and record.status in {"CREATED", "RUNNING"}:
+            record.status = "FAILED"
+            record.error = "Worker failed unexpectedly; automatic replay was suppressed to avoid duplicate target side effects."
+            record.completed_at = datetime.now(timezone.utc)
+            store.save(record)
+            store.append_event(run_id, {"type": "run.failed", "phase": "FAILED", "reason": "worker_exception"})
+    finally:
+        monitor.cancel()
+    record = store.get(run_id)
+    if record and record.status in {"COMPLETED", "FAILED", "CANCELLED", "PARTIAL"}:
+        store.acknowledge_job(run_id)
+    else:
+        store.expire_stale_jobs()
+    return True
+
+
+async def run_worker(poll_seconds: float = 0.5) -> None:
+    while True:
+        if not await process_one_job():
+            await asyncio.sleep(poll_seconds)
 
 
 def main() -> None:

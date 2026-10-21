@@ -19,7 +19,7 @@ load_dotenv(Path.cwd() / ".env")
 
 @asynccontextmanager
 async def lifespan(_app):
-    store.requeue_stale_jobs()
+    store.expire_stale_jobs()
     yield
 
 
@@ -61,7 +61,7 @@ refresh();
 
 @app.get("/api/health")
 def health():
-    return {"status": "ok", "product": "BreakMyBot", "storage": "sqlite"}
+    return {"status": "ok", "product": "BreakMyBot", "storage": "sqlite", "execution": "sqlite-worker-queue"}
 
 
 @app.post("/api/targets/discover")

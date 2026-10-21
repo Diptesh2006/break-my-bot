@@ -4,13 +4,13 @@ Verification run: 2026-10-21 (Asia/Calcutta)
 
 ## BreakMyBot automated checks
 
-- `python -m pytest -q`: 28 passed, including ordered fault-chain and SQLite worker-queue tests.
+- `python -m pytest -q`: 29 passed, including ordered fault-chain and SQLite worker execution/queue tests.
 - `python -m ruff check src tests examples`: passed.
 - `python -m compileall -q src examples tests`: passed.
 - `git diff --check`: passed.
 - `docker compose config -q`: passed after adding the separate worker service.
 
-The API now stores queued run configurations and cancellation state in SQLite; a separate worker claims jobs under renewable leases. Queue claim, cancellation, expiry recovery, API enqueue behavior, and model reconstruction are unit-tested. Actual worker runtime and worker-to-host target networking remain unverified because the Docker Desktop Linux engine was unavailable in the environment.
+The API now stores queued run configurations and cancellation state in SQLite; a separate worker claims jobs under renewable leases. Queue claim, cancellation, stale-lease failure without automatic replay, API enqueue behavior, model reconstruction, and worker processing/acknowledgment are unit-tested. Actual container runtime and worker-to-host target networking remain unverified because the Docker Desktop Linux engine was unavailable in the environment.
 
 ## Instrumented localhost end-to-end run
 
