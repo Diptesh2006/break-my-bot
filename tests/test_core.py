@@ -247,6 +247,14 @@ def test_nested_untrusted_evidence_redacts_secret_keys_and_bearer_values():
         "judge": {"api_key": "[REDACTED]", "note": "safe"}}
 
 
+def test_redaction_preserves_token_usage_counts_but_hides_token_credentials():
+    observed = redact_evidence({"usage": {"total_tokens": 18, "prompt_tokens": 10,
+        "completion_tokens": 8}, "access_token": "private-access-token",
+        "token": "private-bearer-token"})
+    assert observed == {"usage": {"total_tokens": 18, "prompt_tokens": 10,
+        "completion_tokens": 8}, "access_token": "[REDACTED]", "token": "[REDACTED]"}
+
+
 def test_response_redaction_hides_echoed_credentials_and_bearer_tokens():
     response = 'echo=private-value Authorization: Bearer abc.def.ghi'
     assert redact_text(response, {"api_key": "private-value"}) == (
@@ -806,6 +814,32 @@ def test_report_surfaces_investigator_findings_as_unscored_hypotheses(tmp_path: 
     pdf_text = " ".join(page.extract_text() or "" for page in PdfReader(paths["pdf"]).pages)
     assert "Inferred dependencies" in pdf_text
     assert "May call a catalog service" in pdf_text
+
+
+def test_report_includes_external_memoryscope_answer_evidence_and_usage(tmp_path: Path):
+    from pypdf import PdfReader
+
+    run = RunRecord(target_url="http://localhost:8000", endpoint_path="/api/chat/sse",
+        method="POST", profile="quick")
+    run.scenarios = [ScenarioResult(scenario_id="memoryscope-1", name="Refund window",
+        category="Output correctness", status="PASSED", evidence={
+            "answer": "Customers may request a refund within 14 days of purchase.",
+            "judge": {"verdict": "pass", "rationale": "Grounded answer matches.",
+                "answer_quote": "within 14 days", "reference_quote": "within 14 days",
+                "model": "local-mock-model", "actual_model": "local-mock-model",
+                "usage": {"total_tokens": 18}}})]
+    run.scoring = calculate(run)
+    paths = generate(run, tmp_path)
+    html_report = Path(paths["html"]).read_text(encoding="utf-8")
+    json_report = json.loads(Path(paths["json"]).read_text(encoding="utf-8"))
+    assert "MemoryScope answer evaluation" in html_report
+    assert "local-mock-model" in html_report
+    assert "total_tokens&quot;: 18" in html_report
+    assert json_report["scenarios"][0]["evidence"]["judge"]["usage"]["total_tokens"] == 18
+    pdf_text = " ".join(page.extract_text() or "" for page in PdfReader(paths["pdf"]).pages)
+    assert "MemoryScope answer evaluation" in pdf_text
+    assert "Grounded answer matches" in pdf_text
+    assert "18" in pdf_text
 
 
 def test_verified_failure_report_contains_expected_actual_reproduction_and_remediation(tmp_path: Path):

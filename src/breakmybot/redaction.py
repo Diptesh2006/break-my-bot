@@ -3,12 +3,21 @@ from __future__ import annotations
 import re
 from typing import Any
 
-SENSITIVE_KEY_PARTS = ("password", "secret", "token", "api_key", "apikey", "authorization", "credential")
+SENSITIVE_KEY_PARTS = ("password", "secret", "api_key", "apikey", "authorization", "credential")
+TOKEN_USAGE_KEYS = {"total_tokens", "prompt_tokens", "completion_tokens", "input_tokens",
+    "output_tokens", "reasoning_tokens", "cached_tokens", "accepted_tokens", "rejected_tokens"}
+
+
+def _sensitive_key(key: str) -> bool:
+    lowered = key.casefold()
+    if lowered in TOKEN_USAGE_KEYS:
+        return False
+    return any(part in lowered for part in SENSITIVE_KEY_PARTS) or "token" in lowered
 
 
 def redact_payload(value: Any, key: str = "") -> Any:
     """Return JSON-safe request evidence while hiding fields named like credentials."""
-    if any(part in key.casefold() for part in SENSITIVE_KEY_PARTS):
+    if _sensitive_key(key):
         return "[REDACTED]"
     if isinstance(value, dict):
         return {str(child_key): redact_payload(child_value, str(child_key)) for child_key, child_value in value.items()}
@@ -35,7 +44,7 @@ def redact_text(value: str, payload: Any, extra_secrets: tuple[str, ...] = ()) -
         elif isinstance(item, list):
             for child in item:
                 collect(child, key)
-        elif any(part in key.casefold() for part in SENSITIVE_KEY_PARTS) and isinstance(item, str) and len(item) >= 4:
+        elif _sensitive_key(key) and isinstance(item, str) and len(item) >= 4:
             secrets.add(item)
 
     collect(payload)
@@ -46,7 +55,7 @@ def redact_text(value: str, payload: Any, extra_secrets: tuple[str, ...] = ()) -
 
 def redact_evidence(value: Any, extra_secrets: tuple[str, ...] = (), key: str = "") -> Any:
     """Sanitize untrusted nested evidence before persisting or publishing it."""
-    if any(part in key.casefold() for part in SENSITIVE_KEY_PARTS):
+    if _sensitive_key(key):
         return "[REDACTED]"
     if isinstance(value, dict):
         return {str(child_key): redact_evidence(child_value, extra_secrets, str(child_key))

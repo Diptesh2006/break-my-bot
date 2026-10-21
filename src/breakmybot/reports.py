@@ -66,7 +66,8 @@ def generate(run: RunRecord, output_dir: Path) -> dict[str, str]:
     payload["report_paths"] = {kind: f"report.{kind}" for kind in ("html", "pdf", "json")}
     json_path.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
     scenario_rows = "".join(
-        f"<tr><td>{html.escape(s.scenario_id)}</td><td>{html.escape(s.name)}</td><td>{html.escape(s.category)}</td><td>{html.escape(s.status)}</td><td>{html.escape(str(s.http_status or '—'))}</td><td>{html.escape(s.limitation or '')}</td></tr>"
+        f"<tr><td>{html.escape(s.scenario_id)}</td><td>{html.escape(s.name)}</td><td>{html.escape(s.category)}</td><td>{html.escape(s.status)}</td><td>{html.escape(str(s.http_status or '—'))}</td><td>{html.escape(s.limitation or '')}</td>"
+        f"<td><details><summary>Observed evidence</summary><pre>{html.escape(json.dumps(s.evidence, ensure_ascii=False, indent=2))}</pre></details></td></tr>"
         for s in run.scenarios
     )
     category_rows = "".join(
@@ -102,6 +103,17 @@ def generate(run: RunRecord, output_dir: Path) -> dict[str, str]:
         f"<td>{html.escape(str(item.evidence.get('judge', {}).get('reference_quote', '')))}</td></tr>"
         for item in semantic_cases
     ) or "<tr><td colspan='6'>No built-in semantic judge cases were run.</td></tr>"
+    memoryscope_cases = [item for item in run.scenarios
+        if item.scenario_id.startswith("memoryscope-") and isinstance(item.evidence.get("judge"), dict)]
+    memoryscope_rows = "".join(
+        f"<tr><td>{html.escape(item.name)}</td><td>{html.escape(item.status)}</td>"
+        f"<td>{html.escape(str(item.evidence['judge'].get('actual_model', item.evidence['judge'].get('model', 'not reported'))))}</td>"
+        f"<td>{html.escape(json.dumps(item.evidence['judge'].get('usage', 'not reported'), ensure_ascii=False))}</td>"
+        f"<td>{html.escape(str(item.evidence['judge'].get('rationale', '')))}</td>"
+        f"<td>{html.escape(str(item.evidence['judge'].get('answer_quote', '')))}</td>"
+        f"<td>{html.escape(str(item.evidence['judge'].get('reference_quote', '')))}</td></tr>"
+        for item in memoryscope_cases
+    ) or "<tr><td colspan='7'>No MemoryScope answer-evaluation cases were run.</td></tr>"
     score = run.scoring.get("overall_score")
     score_text = f"{score}/100" if score is not None else "Not established"
     observed_scopes = ", ".join(run.scoring.get("observed_scopes", [])) or "none"
@@ -115,7 +127,8 @@ def generate(run: RunRecord, output_dir: Path) -> dict[str, str]:
 <h2>Scenario planning hypotheses</h2><table><thead><tr><th>Proposal</th><th>Hypothesis</th><th>Capability gate</th><th>Execution</th></tr></thead><tbody>{plan_rows}</tbody></table>
 <h2>LLM investigation · hypotheses, not scored facts</h2><p>Provider: {html.escape(str(run.planning.get('provider', 'not recorded')))} · Model: {html.escape(str(run.planning.get('actual_model', run.planning.get('selected_model', run.planning.get('requested_model', 'not recorded')))))} · Attempts: {html.escape(str(run.planning.get('provider_attempts', 'not recorded')))}</p>{investigation_sections}
 <h2>Reference-grounded semantic judgments · fallible model evidence</h2><p>Status: {html.escape(str(run.semantic_judging.get('status', 'not requested')))} · Provider: {html.escape(str(run.semantic_judging.get('provider', 'not recorded')))} · Model: {html.escape(str(run.semantic_judging.get('actual_model', run.semantic_judging.get('selected_model', run.semantic_judging.get('requested_model', 'not recorded')))))} · Attempts: {html.escape(str(run.semantic_judging.get('provider_attempts', 'not recorded')))} · Usage: {html.escape(str(run.semantic_judging.get('usage', 'not reported')))} · Cost: {html.escape(str(run.semantic_judging.get('provider_cost', 'not reported')))}</p><table><thead><tr><th>Case</th><th>Result</th><th>Confidence</th><th>Rationale</th><th>Answer quote</th><th>Reference quote</th></tr></thead><tbody>{semantic_rows}</tbody></table><p>A single model judgment is fallible; review its grounded quotes. The overall score is calculated by the fixed rubric from persisted scenario outcomes.</p>
-<h2>Scenario inventory</h2><table><thead><tr><th>ID</th><th>Scenario</th><th>Category</th><th>Result</th><th>HTTP</th><th>Limitations</th></tr></thead><tbody>{scenario_rows}</tbody></table>
+<h2>MemoryScope answer evaluation · external service evidence</h2><p>MemoryScope judges grounded answers from the selected target; this is not a persistent-memory lifecycle test. Provider and cost details are reported only when the service includes them.</p><table><thead><tr><th>Case</th><th>Result</th><th>Model</th><th>Usage</th><th>Rationale</th><th>Answer quote</th><th>Reference quote</th></tr></thead><tbody>{memoryscope_rows}</tbody></table>
+<h2>Scenario inventory and evidence</h2><table><thead><tr><th>ID</th><th>Scenario</th><th>Category</th><th>Result</th><th>HTTP</th><th>Limitations</th><th>Observed evidence</th></tr></thead><tbody>{scenario_rows}</tbody></table>
 <h2>Method and limitations</h2><p>Methodology: {html.escape(run.scoring.get('methodology', ''))}. The score describes only executed checks and is not a universal safety certification.</p>
 <p>Unsupported capabilities: {html.escape(', '.join(run.scoring.get('untested_capabilities', [])))}</p><small>Run {html.escape(run.id)} · {html.escape(run.created_at.isoformat())}</small></body></html>"""
     html_path.write_text(html_doc, encoding="utf-8")
@@ -145,6 +158,13 @@ def generate(run: RunRecord, output_dir: Path) -> dict[str, str]:
         ("TEXTCOLOR", (0, 0), (-1, 0), colors.white), ("GRID", (0, 0), (-1, -1), 0.4, colors.grey),
         ("VALIGN", (0, 0), (-1, -1), "TOP"), ("FONTSIZE", (0, 0), (-1, -1), 8)]))
     story.extend([table, Spacer(1, 16), Paragraph("Unsupported: " + html.escape(", ".join(run.scoring.get("untested_capabilities", []))), styles["BodyText"])])
+    story.append(Paragraph("Scenario inventory and observed evidence", styles["Heading2"]))
+    for item in run.scenarios:
+        story.append(Paragraph(html.escape(f"{item.name} — {item.status} · {item.category}"), styles["Heading3"]))
+        if item.evidence:
+            story.append(Paragraph(html.escape(json.dumps(item.evidence, ensure_ascii=False)), styles["BodyText"]))
+        else:
+            story.append(Paragraph("No structured evidence was recorded.", styles["BodyText"]))
     story.append(Paragraph("LLM investigation · hypotheses, not scored facts", styles["Heading2"]))
     story.append(Paragraph("Provider: " + html.escape(str(run.planning.get("provider", "not recorded")))
         + " · Model: " + html.escape(str(run.planning.get("actual_model", run.planning.get("selected_model", run.planning.get("requested_model", "not recorded")))))
@@ -180,6 +200,19 @@ def generate(run: RunRecord, output_dir: Path) -> dict[str, str]:
     else:
         story.append(Paragraph("No built-in semantic judge cases were run.", styles["BodyText"]))
     story.append(Paragraph("A single model judgment is fallible; review grounded quotes. The aggregate score uses the fixed rubric, not a model-generated score.", styles["BodyText"]))
+    story.append(Paragraph("MemoryScope answer evaluation · external service evidence", styles["Heading2"]))
+    if memoryscope_cases:
+        story.append(Paragraph("MemoryScope evaluates grounded answers from the selected target; this is not a persistent-memory lifecycle test.", styles["BodyText"]))
+        for item in memoryscope_cases:
+            judged = item.evidence["judge"]
+            model = judged.get("actual_model", judged.get("model", "not reported"))
+            usage = json.dumps(judged.get("usage", "not reported"), ensure_ascii=False)
+            story.extend([Paragraph(html.escape(f"{item.name} — {item.status} · model {model} · usage {usage}"), styles["Heading3"]),
+                Paragraph("Rationale: " + html.escape(str(judged.get("rationale", "not reported"))), styles["BodyText"]),
+                Paragraph("Answer quote: " + html.escape(str(judged.get("answer_quote", "not reported"))), styles["BodyText"]),
+                Paragraph("Reference quote: " + html.escape(str(judged.get("reference_quote", "not reported"))), styles["BodyText"])])
+    else:
+        story.append(Paragraph("No MemoryScope answer-evaluation cases were run.", styles["BodyText"]))
     failed = [s for s in run.scenarios if s.status == "VERIFIED_FAILURE"]
     if failed:
         story.append(Paragraph("Verified findings", styles["Heading2"]))
