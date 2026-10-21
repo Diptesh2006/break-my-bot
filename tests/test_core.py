@@ -17,7 +17,7 @@ from breakmybot.reports import generate
 from breakmybot.target import docker_resolve_url
 from breakmybot.redaction import redact_evidence, redact_payload, redact_text
 from breakmybot.scoring import calculate
-from breakmybot.target import (identify_endpoints, identify_health_endpoints, payload_from_operation,
+from breakmybot.target import (discover, identify_endpoints, identify_health_endpoints, payload_from_operation,
     preflight as run_preflight, validate_target)
 
 
@@ -734,6 +734,32 @@ def test_setup_errors_do_not_claim_an_observed_scope():
 def test_docker_loopback_translation_preserves_target_path_without_query_or_fragment(host):
     resolved = docker_resolve_url(f"http://{host}:8000/api/chat?token=unsafe#fragment")
     assert resolved == "http://host.docker.internal:8000/api/chat"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("error, expected_hint", [
+    (httpx.ConnectError("refused"), "bound to 0.0.0.0"),
+    (httpx.ConnectTimeout("timeout"), "host firewall"),
+])
+async def test_docker_discovery_explains_container_to_host_connection_failure(monkeypatch, error, expected_hint):
+    class BrokenClient:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return None
+
+        async def get(self, request_url):
+            assert request_url == "http://host.docker.internal:8000"
+            raise error
+
+    monkeypatch.setenv("BREAKMYBOT_ALLOWED_HOSTS", "host.docker.internal")
+    monkeypatch.setattr("breakmybot.target.httpx.AsyncClient", lambda **_kwargs: BrokenClient())
+    result = await discover("http://localhost:8000", docker_mode=True)
+    assert result.target_url == "http://localhost:8000"
+    assert not result.reachable
+    assert any("Container-to-host target check failed" in item and expected_hint in item
+        for item in result.diagnostics)
 
 
 def test_report_outputs_are_portable_and_include_limitations(tmp_path: Path):

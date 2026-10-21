@@ -321,8 +321,22 @@ async def discover(url: str, *, docker_mode: bool = False) -> DiscoveryResult:
             reachable = response.status_code < 500
             diagnostics.append(f"Root endpoint returned HTTP {response.status_code}")
         except httpx.HTTPError as exc:
+            if docker_mode and urlsplit(request_url).hostname == "host.docker.internal":
+                if isinstance(exc, httpx.ConnectTimeout):
+                    detail = ("The container-side connection timed out. Confirm the target is listening on the host, "
+                        "bound to 0.0.0.0 (not only 127.0.0.1), and permitted through the host firewall for Docker traffic.")
+                elif isinstance(exc, httpx.ConnectError):
+                    detail = ("The container could not connect through host.docker.internal. Confirm the target is "
+                        "running and bound to 0.0.0.0; on Linux verify Docker host-gateway support and the host firewall. "
+                        "If the target is in another Compose network, use its reachable service DNS name instead of localhost.")
+                else:
+                    detail = ("The target request failed from the container network. Check target availability, "
+                        "host binding, Docker host-gateway configuration, and host firewall rules.")
+                diagnostics.append(f"Container-to-host target check failed ({type(exc).__name__}). {detail}")
+            else:
+                diagnostics.append(f"Target is unreachable from the BreakMyBot service: {type(exc).__name__}")
             return DiscoveryResult(target_url=display_url, reachable=False,
-                diagnostics=[f"Target is unreachable from the BreakMyBot service: {type(exc).__name__}"])
+                diagnostics=diagnostics)
         parsed = urlsplit(request_url)
         found_spec = False
         app_name = None
