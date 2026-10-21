@@ -105,6 +105,65 @@ def test_legacy_database_gets_migration_history(tmp_path, monkeypatch):
         assert {row[1] for row in migrated.execute("PRAGMA table_info(runs)")} >= {"id", "project_id"}
 
 
+def test_postgres_adapter_translates_parameters_and_closes_transaction():
+    class Cursor:
+        def execute(self, statement, parameters):
+            self.statement = statement
+            self.parameters = parameters
+
+    class Connection:
+        def __init__(self):
+            self.cursor_value = Cursor()
+            self.committed = False
+            self.closed = False
+
+        def cursor(self):
+            return self.cursor_value
+
+        def commit(self):
+            self.committed = True
+
+        def rollback(self):
+            raise AssertionError("unexpected rollback")
+
+        def close(self):
+            self.closed = True
+
+    raw = Connection()
+    adapter = store.PostgresConnection(raw)
+    cursor = adapter.execute("SELECT * FROM runs WHERE id=? AND project_id=?", ("run", "project"))
+    assert cursor.statement == "SELECT * FROM runs WHERE id=%s AND project_id=%s"
+    assert cursor.parameters == ("run", "project")
+    with adapter:
+        pass
+    assert raw.committed and raw.closed
+
+
+def test_postgres_migrations_include_advisory_lock_and_legacy_upgrade():
+    class Cursor:
+        def __init__(self, rows=()):
+            self.rows = list(rows)
+
+        def fetchall(self):
+            return self.rows
+
+    class FakeConnection:
+        def __init__(self):
+            self.statements = []
+
+        def execute(self, statement, parameters=()):
+            self.statements.append(statement)
+            return Cursor([])
+
+    fake = FakeConnection()
+    store._migrate_postgres(fake)
+    joined = "\\n".join(fake.statements)
+    assert "pg_advisory_xact_lock" in joined
+    assert "BIGSERIAL" in joined
+    assert "ALTER TABLE runs ADD COLUMN IF NOT EXISTS project_id TEXT" in joined
+    assert "INSERT INTO schema_migrations(version) VALUES(2)" in joined
+
+
 @pytest.mark.asyncio
 async def test_project_api_filters_runs_and_rejects_cross_target_association(tmp_path, monkeypatch):
     monkeypatch.setenv("BREAKMYBOT_DATA_DIR", str(tmp_path))

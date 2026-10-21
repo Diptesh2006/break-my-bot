@@ -5,6 +5,7 @@ import os
 import sqlite3
 import time
 from pathlib import Path
+from typing import Any
 
 from .models import ProjectRecord, RunRecord
 
@@ -33,7 +34,64 @@ def _migrate(db: sqlite3.Connection) -> None:
         db.execute("INSERT INTO schema_migrations(version) VALUES(2)")
 
 
-def connect() -> sqlite3.Connection:
+class PostgresConnection:
+    """Small DB-API adapter keeping storage queries portable across SQLite/PostgreSQL."""
+
+    def __init__(self, connection: Any):
+        self.connection = connection
+
+    def execute(self, statement: str, parameters: tuple = ()):
+        cursor = self.connection.cursor()
+        cursor.execute(statement.replace("?", "%s"), parameters)
+        return cursor
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, traceback):
+        if exc_type:
+            self.connection.rollback()
+        else:
+            self.connection.commit()
+        self.connection.close()
+        return False
+
+
+def _migrate_postgres(db: PostgresConnection) -> None:
+    db.execute("SELECT pg_advisory_xact_lock(72623859790382856)")
+    db.execute("CREATE TABLE IF NOT EXISTS schema_migrations (version INTEGER PRIMARY KEY, applied_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP)")
+    applied = {row[0] for row in db.execute("SELECT version FROM schema_migrations").fetchall()}
+    if 1 not in applied:
+        db.execute("CREATE TABLE IF NOT EXISTS runs (id TEXT PRIMARY KEY, created_at TEXT NOT NULL, payload TEXT NOT NULL)")
+        db.execute("CREATE TABLE IF NOT EXISTS projects (id TEXT PRIMARY KEY, created_at TEXT NOT NULL, payload TEXT NOT NULL)")
+        db.execute("CREATE TABLE IF NOT EXISTS events (sequence BIGSERIAL PRIMARY KEY, run_id TEXT NOT NULL, event TEXT NOT NULL)")
+        db.execute("CREATE TABLE IF NOT EXISTS jobs (run_id TEXT PRIMARY KEY, request TEXT NOT NULL, status TEXT NOT NULL, cancel_requested BOOLEAN NOT NULL DEFAULT FALSE, lease_until DOUBLE PRECISION, attempts INTEGER NOT NULL DEFAULT 0, created_at DOUBLE PRECISION NOT NULL)")
+        db.execute("INSERT INTO schema_migrations(version) VALUES(1)")
+    if 2 not in applied:
+        db.execute("ALTER TABLE runs ADD COLUMN IF NOT EXISTS project_id TEXT")
+        db.execute("INSERT INTO schema_migrations(version) VALUES(2)")
+
+
+def connect():
+    database_url = os.getenv("BREAKMYBOT_DATABASE_URL", "").strip()
+    if database_url:
+        if not database_url.startswith(("postgresql://", "postgres://")):
+            raise ValueError("BREAKMYBOT_DATABASE_URL must be a PostgreSQL URL")
+        try:
+            import psycopg2
+        except ImportError as exc:
+            raise RuntimeError("Install BreakMyBot with the 'postgres' extra to use PostgreSQL") from exc
+        raw_connection = psycopg2.connect(database_url, connect_timeout=10)
+        connection = PostgresConnection(raw_connection)
+        try:
+            _migrate_postgres(connection)
+            raw_connection.commit()
+        except Exception:
+            raw_connection.rollback()
+            raw_connection.close()
+            raise
+        return connection
+
     db = sqlite3.connect(data_dir() / "breakmybot.sqlite3", timeout=10)
     try:
         with db:
@@ -88,6 +146,9 @@ def latest(limit: int = 50, project_id: str | None = None) -> list[RunRecord]:
 
 def append_event(run_id: str, event: dict) -> int:
     with connect() as db:
+        if os.getenv("BREAKMYBOT_DATABASE_URL", "").strip():
+            cursor = db.execute("INSERT INTO events(run_id,event) VALUES(?,?) RETURNING sequence", (run_id, json.dumps(event)))
+            return int(cursor.fetchone()[0])
         cursor = db.execute("INSERT INTO events(run_id,event) VALUES(?,?)", (run_id, json.dumps(event)))
         return int(cursor.lastrowid)
 
@@ -107,8 +168,11 @@ def enqueue(run_id: str, request: dict) -> None:
 def claim_job(lease_seconds: int = 900) -> tuple[str, dict] | None:
     now = time.time()
     with connect() as db:
-        db.execute("BEGIN IMMEDIATE")
-        row = db.execute("SELECT run_id,request FROM jobs WHERE status='QUEUED' ORDER BY created_at LIMIT 1").fetchone()
+        if os.getenv("BREAKMYBOT_DATABASE_URL", "").strip():
+            row = db.execute("SELECT run_id,request FROM jobs WHERE status='QUEUED' ORDER BY created_at LIMIT 1 FOR UPDATE SKIP LOCKED").fetchone()
+        else:
+            db.execute("BEGIN IMMEDIATE")
+            row = db.execute("SELECT run_id,request FROM jobs WHERE status='QUEUED' ORDER BY created_at LIMIT 1").fetchone()
         if not row:
             return None
         db.execute("UPDATE jobs SET status='RUNNING',lease_until=?,attempts=attempts+1 WHERE run_id=?",
@@ -131,12 +195,14 @@ def renew_job_lease(run_id: str, lease_seconds: int = 900) -> bool:
 
 def cancel_job(run_id: str) -> bool:
     with connect() as db:
-        db.execute("BEGIN IMMEDIATE")
+        if not os.getenv("BREAKMYBOT_DATABASE_URL", "").strip():
+            db.execute("BEGIN IMMEDIATE")
         row = db.execute("SELECT status FROM jobs WHERE run_id=?", (run_id,)).fetchone()
         if not row or row[0] not in {"QUEUED", "RUNNING"}:
             return False
         if row[0] == "QUEUED":
-            db.execute("UPDATE jobs SET status='CANCELLED',cancel_requested=1 WHERE run_id=?", (run_id,))
+            cancelled = "TRUE" if os.getenv("BREAKMYBOT_DATABASE_URL", "").strip() else "1"
+            db.execute(f"UPDATE jobs SET status='CANCELLED',cancel_requested={cancelled} WHERE run_id=?", (run_id,))
             run_row = db.execute("SELECT payload FROM runs WHERE id=?", (run_id,)).fetchone()
             if run_row:
                 run = RunRecord.model_validate_json(run_row[0])
@@ -148,7 +214,8 @@ def cancel_job(run_id: str) -> bool:
                 db.execute("INSERT INTO events(run_id,event) VALUES(?,?)",
                            (run_id, json.dumps({"type": "run.cancelled", "phase": "CANCELLED"})))
         else:
-            db.execute("UPDATE jobs SET cancel_requested=1 WHERE run_id=?", (run_id,))
+            cancelled = "TRUE" if os.getenv("BREAKMYBOT_DATABASE_URL", "").strip() else "1"
+            db.execute(f"UPDATE jobs SET cancel_requested={cancelled} WHERE run_id=?", (run_id,))
         return True
 
 

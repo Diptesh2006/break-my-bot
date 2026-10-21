@@ -67,7 +67,9 @@ refresh();
 
 @app.get("/api/health")
 def health():
-    return {"status": "ok", "product": "BreakMyBot", "storage": "sqlite", "execution": "sqlite-worker-queue"}
+    storage = "postgresql" if os.getenv("BREAKMYBOT_DATABASE_URL", "").strip() else "sqlite"
+    return {"status": "ok", "product": "BreakMyBot", "storage": storage,
+            "execution": f"{storage}-worker-queue"}
 
 
 @app.post("/api/targets/discover")

@@ -4,7 +4,7 @@
 
 BreakMyBot connects to an AI application's HTTP API, discovers OpenAPI endpoints and request shapes, performs bounded real invocations, records response and latency evidence, computes a deterministic score only when enough checks ran, and generates portable JSON, HTML, and PDF reports.
 
-BreakMyBot is a standalone repository: its API, durable worker, SQLite store, CLI, reports, demo target, and bundled dashboard are all part of this project. It supports black-box HTTP checks and opt-in FastAPI tool-fault instrumentation. Persistent memory lifecycle, security boundaries, and hidden agent state remain unsupported unless a suitable target adapter exists. Optional MemoryScope and nRouter integrations do not need to be installed to use the default product. Reports distinguish score from coverage and never present the score as a probability of safety.
+BreakMyBot is a standalone repository: its API, durable worker, SQLite/PostgreSQL storage, CLI, reports, demo target, and bundled dashboard are all part of this project. It supports black-box HTTP checks and opt-in FastAPI tool-fault instrumentation. Persistent memory lifecycle, security boundaries, and hidden agent state remain unsupported unless a suitable target adapter exists. Optional MemoryScope and nRouter integrations do not need to be installed to use the default product. Reports distinguish score from coverage and never present the score as a probability of safety.
 
 ## Quick start
 
@@ -18,11 +18,11 @@ Prerequisite: Docker Desktop (Windows/macOS) or Docker Engine with the Compose p
 docker compose up -d --build
 ```
 
-This starts the API at `http://127.0.0.1:8000`, a worker, and the dashboard at `http://127.0.0.1:3000`; SQLite and reports are stored in this checkout's `data/` directory. Swagger docs are at `http://127.0.0.1:8000/docs`.
+This starts PostgreSQL, the API, a worker, and the dashboard at `http://127.0.0.1:3000`. PostgreSQL data is kept in a named Docker volume; generated report files are stored under this checkout's `data/` directory. The API advertises its active backend at `/api/health`; Swagger docs are at `http://127.0.0.1:8000/docs`. Compose uses a local-development-only database password by default. Before exposing the database or application beyond your own machine, set a strong `POSTGRES_PASSWORD` in the ignored `.env` file and configure appropriate network access. If the password contains URL-reserved characters, set `BREAKMYBOT_DATABASE_URL` there with its password URL-encoded.
 
 ### API and CLI without Docker
 
-Python 3.11+ is required. From the repository root, create and activate an environment (`.venv\\Scripts\\Activate.ps1` in PowerShell or `source .venv/bin/activate` on macOS/Linux), then install the project:
+Python 3.11+ is required. From the repository root, create and activate an environment (`.venv\Scripts\Activate.ps1` in PowerShell or `source .venv/bin/activate` on macOS/Linux), then install the project:
 
 ```powershell
 python -m venv .venv
@@ -40,7 +40,7 @@ uvicorn breakmybot.api:app --host 127.0.0.1 --port 8000
 python -m breakmybot.worker
 ```
 
-They use local SQLite storage under `data/`; ordered SQLite schema migrations are applied automatically at startup. For a quick CLI-only check against your own reachable target, `breakmybot test --url <target-url>` does not require the API or worker. Queued runs survive API restarts; an expired in-flight run is marked failed rather than replayed, avoiding duplicate target side effects. PostgreSQL is not currently supported.
+They use local SQLite storage under `data/` by default; ordered SQLite schema migrations are applied automatically at startup. To use PostgreSQL outside Compose, install `python -m pip install -e '.[postgres]'` and set `BREAKMYBOT_DATABASE_URL` for both API and worker. PostgreSQL migrations are applied automatically. For a quick CLI-only check against your own reachable target, `breakmybot test --url <target-url>` does not require the API or worker. Queued runs survive API restarts; an expired in-flight run is marked failed rather than replayed, avoiding duplicate target side effects.
 
 Run an assessment against a local target:
 
@@ -157,5 +157,7 @@ ruff check src tests examples benchmarks
 ```
 
 See [`docs/scoring-methodology.md`](docs/scoring-methodology.md) for formulas and limits. The optional nRouter planner is bounded and consent-gated; the deterministic default workflow makes no paid provider calls. MemoryScope answer judging is a separate optional integration and does not verify persistent-memory behavior.
+
+The PostgreSQL storage contract has an opt-in live integration test. Point `BREAKMYBOT_TEST_POSTGRES_URL` at a disposable PostgreSQL database and run `python -m pytest -q tests/test_postgres_integration.py`; the test creates uniquely named rows and removes them afterward. Do not point it at a production database.
 
 To reproduce the deterministic local fault/memory regression benchmark, follow [`benchmarks/README.md`](benchmarks/README.md). It runs against isolated loopback demo services and is explicitly not a comparative research result.
