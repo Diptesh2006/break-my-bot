@@ -49,7 +49,7 @@ BreakMyBot checks target reachability from the API/runner environment, then look
 
 With Docker Desktop, the compose service maps host loopback URLs to `host.docker.internal` for the container-side request and adds the host gateway. Run a target on the host bound to `0.0.0.0` if container access requires it, and use a host firewall rule limited to the local Docker network. Linux Docker Compose includes the `host-gateway` mapping. Other Compose projects can use their shared network and a hostname explicitly added to `BREAKMYBOT_ALLOWED_HOSTS`.
 
-Loopback targets are allowed by default. Explicit test hosts must be listed in `BREAKMYBOT_ALLOWED_HOSTS`; their resolved addresses must be private, loopback, link-local, or inside a configured `BREAKMYBOT_ALLOWED_CIDRS` network. Redirects are disabled. Do not point this prototype at a production or side-effecting service.
+Loopback targets are allowed by default. Target URLs may not embed credentials or query parameters; configure auth through environment-variable names instead. Explicit test hosts must be listed in `BREAKMYBOT_ALLOWED_HOSTS`; their resolved addresses must be private, loopback, link-local, or inside a configured `BREAKMYBOT_ALLOWED_CIDRS` network. Redirects are disabled. Do not point this prototype at a production or side-effecting service.
 
 ## Profiles and scoring
 
@@ -107,6 +107,8 @@ python -m uvicorn app:app --app-dir examples/demo-agent --host 0.0.0.0 --port 80
 Then assess it with `breakmybot test --url http://localhost:8001`. The demo is a deterministic fixture, not a real external LLM, and its report identifies only HTTP behavior.
 
 To try instrumented recovery, start the demo with `BREAKMYBOT_INSTRUMENTATION_ENABLED=true` and a shared `BREAKMYBOT_INSTRUMENTATION_TOKEN` (32+ characters) in both the agent and BreakMyBot API environments. Then run `breakmybot test --url http://localhost:8001 --endpoint /api/chat --payload-json '{"message":"refund policy"}' --instrumented-faults examples/demo-agent/tool-faults.json --allow-repeated-post`. This executes a real target request with an injected `refund_policy` timeout and checks the explicit `contact support` fallback invariant.
+
+For a deterministic failing control, also start the demo with `DEMO_UNSAFE_TOOL_FALLBACK=true`. The same injected timeout then produces a false refund claim, which violates the `contact support` invariant and should appear as a verified Tool reliability finding. Keep this switch limited to the isolated local demo.
 
 ## Development
 

@@ -23,6 +23,11 @@ def test_target_policy_rejects_public_literal_ip():
         validate_target("http://8.8.8.8:8000")
 
 
+def test_target_policy_rejects_query_string_credentials():
+    with pytest.raises(ValueError, match="query parameters"):
+        validate_target("http://localhost:8000/?token=secret")
+
+
 def test_payload_redaction_hides_credentials_recursively():
     assert redact_payload({"messages": [{"content": "safe", "api_key": "do-not-store"}]}) == {
         "messages": [{"content": "safe", "api_key": "[REDACTED]"}]}
@@ -107,12 +112,12 @@ async def test_instrumentation_control_session_arms_injects_observes_and_cleans_
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize(("expected", "expected_state"), [
-    ("safe fallback", "PASSED"),
-    ("unsafe response", "VERIFIED_FAILURE"),
+@pytest.mark.parametrize(("fallback", "expected", "expected_state"), [
+    ("safe fallback", "safe fallback", "PASSED"),
+    ("unsafe answer", "safe fallback", "VERIFIED_FAILURE"),
 ])
 async def test_runner_scores_confirmed_instrumented_fault_with_explicit_invariant(
-    tmp_path, monkeypatch, expected, expected_state
+    tmp_path, monkeypatch, fallback, expected, expected_state
 ):
     target = FastAPI()
     token = "integration-test-token-1234567890"
@@ -123,7 +128,7 @@ async def test_runner_scores_confirmed_instrumented_fault_with_explicit_invarian
         try:
             answer = await controller.invoke("catalog", lambda: "real lookup")
         except TimeoutError:
-            answer = "safe fallback"
+            answer = fallback
         return {"answer": answer}
 
     original_client = httpx.AsyncClient
@@ -226,12 +231,13 @@ def test_setup_errors_do_not_claim_an_observed_scope():
 
 
 def test_report_outputs_are_portable_and_include_limitations(tmp_path: Path):
-    run = RunRecord(target_url="http://localhost:8000", endpoint_path="/chat", method="POST", profile="quick")
+    run = RunRecord(target_url="http://localhost:8000/", endpoint_path="/chat", method="POST", profile="quick")
     run.scoring = calculate(run)
     paths = generate(run, tmp_path)
     assert set(paths) == {"json", "html", "pdf"}
     assert all(Path(path).is_file() and Path(path).stat().st_size > 0 for path in paths.values())
     assert "not a safety probability" in Path(paths["html"]).read_text(encoding="utf-8")
+    assert "http://localhost:8000/chat" in Path(paths["html"]).read_text(encoding="utf-8")
 
 
 @pytest.mark.asyncio

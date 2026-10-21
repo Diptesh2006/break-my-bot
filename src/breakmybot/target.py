@@ -23,8 +23,8 @@ def validate_target(url: str) -> None:
     parsed = urlsplit(url)
     if parsed.scheme not in {"http", "https"} or not parsed.hostname:
         raise ValueError("Target must be an absolute http or https URL")
-    if parsed.username or parsed.password or parsed.fragment:
-        raise ValueError("Target URL cannot contain credentials or a fragment")
+    if parsed.username or parsed.password or parsed.query or parsed.fragment:
+        raise ValueError("Target URL cannot contain credentials, query parameters, or a fragment; use auth environment variables")
     hostname = parsed.hostname.lower()
     if hostname in {"localhost", "ip6-localhost"}:
         return

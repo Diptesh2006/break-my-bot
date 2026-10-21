@@ -3,6 +3,7 @@ from __future__ import annotations
 import html
 import json
 from pathlib import Path
+from urllib.parse import urljoin
 
 from reportlab.lib import colors
 from reportlab.lib.pagesizes import letter
@@ -17,6 +18,7 @@ def generate(run: RunRecord, output_dir: Path) -> dict[str, str]:
     json_path = output_dir / "report.json"
     html_path = output_dir / "report.html"
     pdf_path = output_dir / "report.pdf"
+    target_endpoint = urljoin(run.target_url.rstrip("/") + "/", run.endpoint_path.lstrip("/"))
     payload = run.model_dump(mode="json")
     json_path.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
     scenario_rows = "".join(
@@ -28,7 +30,7 @@ def generate(run: RunRecord, output_dir: Path) -> dict[str, str]:
         for name, item in run.scoring.get("category_scores", {}).items()
     ) or "<tr><td colspan='4'>No category has enough conclusive observations yet.</td></tr>"
     finding_rows = "".join(
-        f"<article><h3>{html.escape(s.name)} · {html.escape(s.severity)}</h3><p>Category: {html.escape(s.category)}. Scenario: {html.escape(s.scenario_id)}.</p><p>Observed status: {html.escape(str(s.http_status or 'No HTTP response'))}. Duration: {html.escape(str(s.duration_ms or 'N/A'))} ms.</p><p>Evidence: {html.escape(json.dumps(s.evidence, ensure_ascii=False))}</p><p>Reproduction request: {html.escape(run.method)} {html.escape(run.target_url + run.endpoint_path)} with payload <code>{html.escape(json.dumps(run.request_payload, ensure_ascii=False))}</code>. Credential-like fields are redacted in stored evidence. Repeat only in an isolated, resettable test environment.</p></article>"
+        f"<article><h3>{html.escape(s.name)} · {html.escape(s.severity)}</h3><p>Category: {html.escape(s.category)}. Scenario: {html.escape(s.scenario_id)}.</p><p>Observed status: {html.escape(str(s.http_status or 'No HTTP response'))}. Duration: {html.escape(str(s.duration_ms or 'N/A'))} ms.</p><p>Evidence: {html.escape(json.dumps(s.evidence, ensure_ascii=False))}</p><p>Reproduction request: {html.escape(run.method)} {html.escape(target_endpoint)} with payload <code>{html.escape(json.dumps(run.request_payload, ensure_ascii=False))}</code>. Credential-like fields are redacted in stored evidence. Repeat only in an isolated, resettable test environment.</p></article>"
         for s in run.scenarios if s.status == "VERIFIED_FAILURE"
     ) or "<p>No verified failures were observed in the executed scenarios.</p>"
     plan_rows = "".join(
@@ -40,7 +42,7 @@ def generate(run: RunRecord, output_dir: Path) -> dict[str, str]:
     observed_scopes = ", ".join(run.scoring.get("observed_scopes", [])) or "none"
     html_doc = f"""<!doctype html><html lang="en"><meta charset="utf-8"><title>BreakMyBot report {html.escape(run.id)}</title>
 <style>body{{font:16px system-ui;max-width:1000px;margin:40px auto;padding:0 24px;color:#18212b}}h1{{font-size:34px}}.score{{font-size:32px;color:#a43129}}table{{border-collapse:collapse;width:100%;margin-top:20px}}th,td{{border:1px solid #ccd2d8;padding:10px;text-align:left}}th{{background:#edf1f5}}small{{color:#59636e}}</style>
-<body><h1>BREAKMYBOT</h1><p>AI RELIABILITY ASSESSMENT</p><h2>{html.escape(run.application_name or 'AI application')}</h2><p>Assessment date: {html.escape(run.created_at.isoformat())}</p><p>{html.escape(run.target_url)}{html.escape(run.endpoint_path)}</p>
+<body><h1>BREAKMYBOT</h1><p>AI RELIABILITY ASSESSMENT</p><h2>{html.escape(run.application_name or 'AI application')}</h2><p>Assessment date: {html.escape(run.created_at.isoformat())}</p><p>{html.escape(target_endpoint)}</p>
 <p class="score">{score_text}</p><p>Coverage: {run.scoring.get('coverage_percent', 0)}%</p><p>{html.escape(run.scoring.get('warning', ''))}</p>
 <h2>Executive summary</h2><p>Assessment of {html.escape(run.application_name or 'the connected target')} via {html.escape(run.method)} {html.escape(run.endpoint_path)}. Status: {html.escape(run.status)}. Observed scopes: {html.escape(observed_scopes)}.</p>
 <h2>Category scorecard</h2><table><thead><tr><th>Category</th><th>Score</th><th>Coverage</th><th>Conclusive</th></tr></thead><tbody>{category_rows}</tbody></table>
@@ -54,7 +56,7 @@ def generate(run: RunRecord, output_dir: Path) -> dict[str, str]:
     styles = getSampleStyleSheet()
     story = [Paragraph("BREAKMYBOT — AI RELIABILITY ASSESSMENT", styles["Title"]), Spacer(1, 12),
              Paragraph(html.escape(run.application_name or "AI application"), styles["Heading2"]),
-             Paragraph(html.escape(run.target_url + run.endpoint_path), styles["BodyText"]),
+             Paragraph(html.escape(target_endpoint), styles["BodyText"]),
              Paragraph(f"Score: {score_text} · Coverage: {run.scoring.get('coverage_percent', 0)}%", styles["Heading2"]),
              Paragraph("Observed scopes: " + html.escape(observed_scopes), styles["BodyText"]),
              Paragraph(html.escape(run.scoring.get("warning", "")), styles["BodyText"]), Spacer(1, 12)]
@@ -81,6 +83,7 @@ def generate(run: RunRecord, output_dir: Path) -> dict[str, str]:
         story.append(Paragraph("Verified findings", styles["Heading2"]))
         for item in failed:
             story.extend([Paragraph(html.escape(f"{item.name} — {item.severity}"), styles["Heading3"]),
+                          Paragraph("Reproduction: " + html.escape(f"{run.method} {target_endpoint} with request payload {json.dumps(run.request_payload, ensure_ascii=False)}"), styles["BodyText"]),
                           Paragraph(html.escape(json.dumps(item.evidence, ensure_ascii=False)[:1500]), styles["BodyText"])])
     SimpleDocTemplate(str(pdf_path), pagesize=letter, title=f"BreakMyBot {run.id}").build(story)
     return {"json": str(json_path), "html": str(html_path), "pdf": str(pdf_path)}
