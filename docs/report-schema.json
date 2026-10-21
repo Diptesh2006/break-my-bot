@@ -1,0 +1,52 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/Diptesh2006/break-my-bot/main/docs/report-schema.json",
+  "title": "BreakMyBot portable assessment report",
+  "description": "Versioned report JSON. Scoring, planning, and scenario evidence are observed run data; unsupported states are not passes.",
+  "type": "object",
+  "properties": {
+    "$schema": {"const": "https://raw.githubusercontent.com/Diptesh2006/break-my-bot/main/docs/report-schema.json"},
+    "report_schema_version": {"const": "1.0.0"},
+    "id": {"type": "string"},
+    "status": {"enum": ["CREATED", "RUNNING", "COMPLETED", "FAILED", "CANCELLED", "PARTIAL"]},
+    "target_url": {"type": "string", "format": "uri"},
+    "project_id": {"type": ["string", "null"]},
+    "endpoint_path": {"type": "string"},
+    "method": {"enum": ["GET", "POST", "PUT", "PATCH"]},
+    "request_payload": {"type": "object", "additionalProperties": true},
+    "application_name": {"type": ["string", "null"]},
+    "profile": {"enum": ["quick", "standard", "deep"]},
+    "created_at": {"type": "string", "format": "date-time"},
+    "completed_at": {"type": ["string", "null"], "format": "date-time"},
+    "scenarios": {"type": "array", "items": {"$ref": "#/$defs/ScenarioResult"}},
+    "scoring": {"type": "object", "additionalProperties": true},
+    "planning": {"type": "object", "additionalProperties": true},
+    "report_paths": {
+      "type": "object",
+      "properties": {"html": {"const": "report.html"}, "pdf": {"const": "report.pdf"}, "json": {"const": "report.json"}},
+      "required": ["html", "pdf", "json"],
+      "additionalProperties": false
+    },
+    "error": {"type": ["string", "null"]}
+  },
+  "required": ["$schema", "report_schema_version", "id", "status", "target_url", "endpoint_path", "method", "profile", "created_at", "scenarios", "scoring", "planning", "report_paths"],
+  "additionalProperties": true,
+  "$defs": {
+    "ScenarioResult": {
+      "type": "object",
+      "properties": {
+        "scenario_id": {"type": "string"},
+        "name": {"type": "string"},
+        "category": {"type": "string"},
+        "status": {"enum": ["PASSED", "VERIFIED_FAILURE", "INCONCLUSIVE", "SETUP_ERROR", "UNSUPPORTED", "SKIPPED"]},
+        "severity": {"type": "string"},
+        "duration_ms": {"type": ["number", "null"]},
+        "http_status": {"type": ["integer", "null"]},
+        "evidence": {"type": "object", "additionalProperties": true},
+        "limitation": {"type": ["string", "null"]}
+      },
+      "required": ["scenario_id", "name", "category", "status", "severity", "evidence"],
+      "additionalProperties": false
+    }
+  }
+}

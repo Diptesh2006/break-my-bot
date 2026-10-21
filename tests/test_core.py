@@ -517,6 +517,8 @@ def test_setup_errors_do_not_claim_an_observed_scope():
 
 
 def test_report_outputs_are_portable_and_include_limitations(tmp_path: Path):
+    from jsonschema import Draft202012Validator, FormatChecker
+
     run = RunRecord(target_url="http://localhost:8000/", endpoint_path="/chat", method="POST", profile="quick")
     run.scoring = calculate(run)
     paths = generate(run, tmp_path)
@@ -524,6 +526,12 @@ def test_report_outputs_are_portable_and_include_limitations(tmp_path: Path):
     assert all(Path(path).is_file() and Path(path).stat().st_size > 0 for path in paths.values())
     assert "not a safety probability" in Path(paths["html"]).read_text(encoding="utf-8")
     assert "http://localhost:8000/chat" in Path(paths["html"]).read_text(encoding="utf-8")
+    schema_path = Path(__file__).resolve().parents[1] / "docs" / "report-schema.json"
+    schema = json.loads(schema_path.read_text(encoding="utf-8"))
+    report_json = json.loads(Path(paths["json"]).read_text(encoding="utf-8"))
+    Draft202012Validator(schema, format_checker=FormatChecker()).validate(report_json)
+    assert report_json["report_schema_version"] == "1.0.0"
+    assert report_json["report_paths"] == {"html": "report.html", "pdf": "report.pdf", "json": "report.json"}
 
 
 def test_verified_failure_report_contains_expected_actual_reproduction_and_remediation(tmp_path: Path):
@@ -550,6 +558,10 @@ def test_verified_failure_report_contains_expected_actual_reproduction_and_remed
     paths = generate(run, tmp_path)
     html_report = Path(paths["html"]).read_text(encoding="utf-8")
     json_report = json.loads(Path(paths["json"]).read_text(encoding="utf-8"))
+    from jsonschema import Draft202012Validator, FormatChecker
+    schema_path = Path(__file__).resolve().parents[1] / "docs" / "report-schema.json"
+    schema = json.loads(schema_path.read_text(encoding="utf-8"))
+    Draft202012Validator(schema, format_checker=FormatChecker()).validate(json_report)
     assert "Expected behavior" in html_report
     assert "Actual observation" in html_report
     assert "Ordered fault sequence" in html_report

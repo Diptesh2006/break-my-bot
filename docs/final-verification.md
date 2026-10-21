@@ -93,3 +93,7 @@ The acceptance test resets and inspects the actual fake service state. With no i
 ## PDF content regression
 
 The verified-failure PDF test extracts rendered text with the development dependency `pypdf`. It asserts the hand-calculated 67/100 score, critical lost-ack finding, observed duplicate count, ordered fault reproduction details, and redacted payload survive PDF generation; the same fixture checks the HTML and JSON artifacts. Latest local checks after this addition: 41 tests passed, Ruff/compileall/diff checks passed, and Compose configuration validated. Docker runtime remains unavailable.
+
+## Portable JSON report schema
+
+At the subsequent report-schema change, `docs/report-schema.json` defines version `1.0.0`. `report.json` self-identifies via `$schema` and `report_schema_version`; report artifact paths are relative filenames. Tests validate both a baseline report and a verified-failure/lost-ack report with a Draft 2020-12 JSON Schema validator. Latest check: 41 tests passed, Ruff, compileall, and `git diff --check` passed. Docker runtime/networking and live paid-provider verification are unchanged and remain unavailable/unverified.

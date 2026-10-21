@@ -21,7 +21,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-dev = ["pytest>=8,<9", "pytest-asyncio>=0.24,<1", "ruff>=0.6,<1", "pypdf>=5,<7"]
+dev = ["pytest>=8,<9", "pytest-asyncio>=0.24,<1", "ruff>=0.6,<1", "pypdf>=5,<7", "jsonschema>=4,<5"]
 
 [project.scripts]
 breakmybot = "breakmybot.cli:app"

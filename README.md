@@ -43,6 +43,8 @@ POST requests require interactive confirmation. Repeated POSTs can cause side ef
 
 The CLI stores reports under `data/reports/<run-id>/report.{json,html,pdf}`. Use `breakmybot report --latest`, `breakmybot runs`, `breakmybot status <run-id>`, and `breakmybot cancel <run-id>` to manage assessments.
 
+The portable `report.json` includes `$schema` and `report_schema_version` fields and validates against [`docs/report-schema.json`](docs/report-schema.json). Its `report_paths` are relative artifact names, not machine-specific filesystem paths.
+
 Download a report copy to the current directory with `breakmybot export --latest --format pdf` (or `html` / `json`).
 
 ## Target discovery and connectivity

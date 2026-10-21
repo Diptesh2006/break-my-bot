@@ -12,6 +12,9 @@ from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer, Table, Tabl
 
 from .models import RunRecord
 
+REPORT_SCHEMA_VERSION = "1.0.0"
+REPORT_SCHEMA_URI = "https://raw.githubusercontent.com/Diptesh2006/break-my-bot/main/docs/report-schema.json"
+
 
 def _finding_expectation(scenario) -> str:
     evidence = scenario.evidence
@@ -58,6 +61,9 @@ def generate(run: RunRecord, output_dir: Path) -> dict[str, str]:
     pdf_path = output_dir / "report.pdf"
     target_endpoint = urljoin(run.target_url.rstrip("/") + "/", run.endpoint_path.lstrip("/"))
     payload = run.model_dump(mode="json")
+    payload["$schema"] = REPORT_SCHEMA_URI
+    payload["report_schema_version"] = REPORT_SCHEMA_VERSION
+    payload["report_paths"] = {kind: f"report.{kind}" for kind in ("html", "pdf", "json")}
     json_path.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
     scenario_rows = "".join(
         f"<tr><td>{html.escape(s.scenario_id)}</td><td>{html.escape(s.name)}</td><td>{html.escape(s.category)}</td><td>{html.escape(s.status)}</td><td>{html.escape(str(s.http_status or '—'))}</td><td>{html.escape(s.limitation or '')}</td></tr>"
