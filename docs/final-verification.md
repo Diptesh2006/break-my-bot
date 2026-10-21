@@ -26,11 +26,25 @@ Safe run `run-942d5b049ca6`: `COMPLETED`, observed reliability score 100/100, co
 
 The earlier recorded demo scores used scoring methodology v2 and are historical evidence only. Under current methodology v3, that recorded run's scenarios cover 45% of weighted rubric categories and would now report **Not established** (the aggregate requires at least 50%). The overall score is not a statistical safety estimate. Unsupported results remain visible; the run did not test memory lifecycle or security policy behavior.
 
-The current test suite additionally verifies an ordered two-fault chain against an in-process FastAPI target, including both fault events and successful cleanup. A separate real-process CLI end-to-end run of the chain was attempted in this session but the desktop process-launch policy rejected launching the local servers; the prior recorded end-to-end evidence above is for the single-fault scenario only.
+## Separate-process worker and CLI end-to-end runs
+
+The API, SQLite worker, and standalone demo agent ran as separate foreground processes on loopback ports 18088/18089. Healthy chain run `run-79e624419d55` completed at 100/100, 57% scenario coverage, and 60% rubric weight observed. Both injected events (`customer_context` exception, then `refund_policy` timeout) appeared in order; cleanup succeeded and the explicit `contact support` invariant passed. HTML, PDF, and JSON report endpoints returned HTTP 200.
+
+With `DEMO_UNSAFE_TOOL_FALLBACK=true`, chain run `run-348269952c75` completed at 67/100, 57% coverage, and 60% rubric weight. The same injections and cleanup were confirmed; the response 'Your refund is guaranteed for any purchase date.' violated the supplied invariant and was recorded as `VERIFIED_FAILURE`. The PDF was parsed with pypdf and checked for score, finding, both tool names, and invariant evidence.
+
+The interactive CLI was then run against those live services, affirmatively answering its safety and authorization prompts. CLI run `run-faada95ca714` completed at 67/100, 62% coverage, and 60% rubric weight (3 passed, 2 verified failures, 3 unsupported). Both the singleton timeout and ordered chain failed against the deliberately unsafe demo, with confirmed injection and cleanup evidence. HTML, PDF, and JSON were generated under `%TEMP%\\bmbm-worker-e2e\\reports\\run-faada95ca714`; PDF extraction confirmed score, findings, and fault provenance. All temporary processes were stopped. No Docker runtime claim is made.
+
+CLI command:
+
+```powershell
+$env:BREAKMYBOT_API_URL='http://127.0.0.1:18088'
+$env:BREAKMYBOT_INSTRUMENTATION_TOKEN='<local test token>'
+python -m breakmybot.cli test --url http://127.0.0.1:18089 --endpoint /api/chat/chain --payload-json '{}' --profile quick --instrumented-faults examples/demo-agent/tool-faults.json --allow-repeated-post
+```
 
 ## Referenced subsystem regressions
 
-- MemoryScope backend: `python -m pytest -q` in `MemoryGuard/backend`: 27 passed, including the capability-manifest test.
+- MemoryScope backend: `python -m pytest -q` in `MemoryGuard/backend`: 29 passed, including capability and configurable nRouter base-URL tests. `ruff check app/beta.py tests/test_beta.py` passed; running Ruff over the full backend also surfaces 64 pre-existing style violations in archived `legacy_demo.py` and older tests.
 - Turbulence backend: `python -m pytest -q` in `turbulence/apps/api`: 86 passed; Ruff passed. The pre-existing edits in its Concentrate client/test and untracked web ESLint file were preserved and not staged.
 
 ## Not verified / limitations

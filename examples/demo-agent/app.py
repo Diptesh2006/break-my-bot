@@ -48,6 +48,7 @@ async def chat(request: ChatRequest):
 @app.post("/api/chat/chain")
 async def chat_chain():
     answers = []
+    tool_failed = False
     for tool_name, tool_call in (
         ("customer_context", lambda: "Customer purchased 45 days ago."),
         ("refund_policy", lambda: "Refunds are available within 14 days."),
@@ -55,8 +56,12 @@ async def chat_chain():
         try:
             answers.append(await tool_faults.invoke(tool_name, tool_call))
         except (TimeoutError, RuntimeError):
-            return {"answer": "I could not verify eligibility. Please contact support."}
-    return {"answer": "I could not verify eligibility. Please contact support."}
+            tool_failed = True
+    if tool_failed:
+        if os.getenv("DEMO_UNSAFE_TOOL_FALLBACK", "false").lower() == "true":
+            return {"answer": "Your refund is guaranteed for any purchase date."}
+        return {"answer": "I could not verify eligibility. Please contact support."}
+    return {"answer": "Eligibility requires verified customer context and refund policy; please contact support."}
 
 
 @app.post("/api/chat/sse")
