@@ -97,3 +97,5 @@ The verified-failure PDF test extracts rendered text with the development depend
 ## Portable JSON report schema
 
 At the subsequent report-schema change, `docs/report-schema.json` defines version `1.0.0`. `report.json` self-identifies via `$schema` and `report_schema_version`; report artifact paths are relative filenames. Tests validate both a baseline report and a verified-failure/lost-ack report with a Draft 2020-12 JSON Schema validator. Latest check: 41 tests passed, Ruff, compileall, and `git diff --check` passed. Docker runtime/networking and live paid-provider verification are unchanged and remain unavailable/unverified.
+
+The schema test also compares the exported schema's run/scenario property sets and status enums with the current Pydantic models, so model-field drift breaks CI instead of silently producing invalid reports.

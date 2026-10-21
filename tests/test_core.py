@@ -528,6 +528,14 @@ def test_report_outputs_are_portable_and_include_limitations(tmp_path: Path):
     assert "http://localhost:8000/chat" in Path(paths["html"]).read_text(encoding="utf-8")
     schema_path = Path(__file__).resolve().parents[1] / "docs" / "report-schema.json"
     schema = json.loads(schema_path.read_text(encoding="utf-8"))
+    model_schema = RunRecord.model_json_schema()
+    report_properties = set(schema["properties"]) - {"$schema", "report_schema_version"}
+    assert report_properties == set(model_schema["properties"])
+    model_scenario = model_schema["$defs"]["ScenarioResult"]
+    report_scenario = schema["$defs"]["ScenarioResult"]
+    assert set(report_scenario["properties"]) == set(model_scenario["properties"])
+    assert schema["properties"]["status"]["enum"] == model_schema["properties"]["status"]["enum"]
+    assert report_scenario["properties"]["status"]["enum"] == model_scenario["properties"]["status"]["enum"]
     report_json = json.loads(Path(paths["json"]).read_text(encoding="utf-8"))
     Draft202012Validator(schema, format_checker=FormatChecker()).validate(report_json)
     assert report_json["report_schema_version"] == "1.0.0"
