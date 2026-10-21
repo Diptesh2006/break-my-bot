@@ -16,6 +16,22 @@ from .redaction import redact_text
 from .target import docker_resolve_url, invoke, validate_target
 
 
+def _phase(run_id: str, phase: str, **details: object) -> None:
+    store.append_event(run_id, {"type": "run.phase", "phase": phase, **details})
+
+
+def _scenario_event(run_id: str, result: ScenarioResult, completed: int) -> None:
+    allowed = {"response_excerpt", "content_type", "assertion_passed", "fault_injected",
+        "injection_events", "cleanup_succeeded", "http_status", "invocation_error",
+        "expected_substring_passed", "threshold_ms", "timeout_ms", "error_type",
+        "contract", "body_nonempty", "parse_passed"}
+    store.append_event(run_id, {"type": "scenario.completed", "scenario_id": result.scenario_id,
+        "name": result.name, "category": result.category, "status": result.status,
+        "severity": result.severity, "http_status": result.http_status,
+        "duration_ms": result.duration_ms, "completed_scenarios": completed,
+        "evidence": {key: value for key, value in result.evidence.items() if key in allowed}})
+
+
 async def _run_instrumented_scenarios(run: RunRecord, request: RunRequest, timeout: float,
                                       headers: dict[str, str] | None,
                                       cancel: asyncio.Event | None) -> list[ScenarioResult]:
@@ -68,6 +84,8 @@ async def _run_instrumented_scenarios(run: RunRecord, request: RunRequest, timeo
             if cancel and cancel.is_set():
                 break
             scenario_id = f"instrumented-tool-{index}"
+            store.append_event(run.id, {"type": "scenario.started", "scenario_id": scenario_id,
+                "name": f"Tool fault scenario: {case_name}", "category": "Tool reliability"})
             session_id = uuid4().hex
             fault_data = [fault.model_dump(exclude={"expected_substring"}) for fault in faults]
             armed = False
@@ -133,8 +151,7 @@ async def _run_instrumented_scenarios(run: RunRecord, request: RunRequest, timeo
                 severity="high" if state == "VERIFIED_FAILURE" else "info",
                 duration_ms=duration, http_status=status_code, evidence=evidence, limitation=limitation)
             results.append(result)
-            store.append_event(run.id, {"type": "scenario.completed", "scenario_id": scenario_id,
-                "status": state, "fault_injected": ordered_injections, "cleanup_succeeded": cleanup_ok})
+            _scenario_event(run.id, result, len(run.scenarios) + len(results))
     return results
 
 
@@ -153,6 +170,7 @@ async def execute(run_id: str, request: RunRequest, cancel: asyncio.Event | None
     run.status = "RUNNING"
     store.save(run)
     store.append_event(run.id, {"type": "run.started", "phase": "DISCOVERING"})
+    _phase(run.id, "DISCOVERING")
     try:
         if cancel and cancel.is_set():
             run.status = "CANCELLED"
@@ -167,6 +185,7 @@ async def execute(run_id: str, request: RunRequest, cancel: asyncio.Event | None
     store.save(run)
     store.append_event(run.id, {"type": "planning.completed", "status": run.planning.get("status"),
         "scenario_count": len(run.planning.get("scenarios", []))})
+    _phase(run.id, "BASELINE")
     try:
         scenario_limit = max(1, int(os.getenv("BREAKMYBOT_MAX_SCENARIOS", "12")))
     except ValueError:
@@ -194,6 +213,14 @@ async def execute(run_id: str, request: RunRequest, cancel: asyncio.Event | None
                 run.status = "CANCELLED"
                 break
             scenario_id = "baseline" if index == 0 else f"repeat-{index}"
+            specs = [(scenario_id, "Baseline invocation" if index == 0 else f"Read-only repeat {index}", "HTTP reliability"),
+                (f"contract-{index}", f"Response contract {index+1}", "Response validity"),
+                (f"latency-{index}", f"Latency threshold {index+1}", "Latency")]
+            if request.expected_substring:
+                specs.append((f"expected-{index}", f"Expected response content {index+1}", "Output correctness"))
+            for active_id, active_name, active_category in specs:
+                store.append_event(run.id, {"type": "scenario.started", "scenario_id": active_id,
+                    "name": active_name, "category": active_category})
             try:
                 status, raw_body, duration, content_type = await invoke(str(request.target_url), request.endpoint_path,
                     request.method, request.payload, min(timeout, request.max_latency_seconds),
@@ -206,7 +233,6 @@ async def execute(run_id: str, request: RunRequest, cancel: asyncio.Event | None
                     "assertion": "HTTP status is 2xx", "assertion_passed": success}
                 if request.expected_substring:
                     matched = request.expected_substring.casefold() in raw_body.casefold()
-                    evidence["expected_substring"] = request.expected_substring
                     evidence["expected_substring_passed"] = matched
                     if not matched:
                         state = "VERIFIED_FAILURE"
@@ -215,7 +241,7 @@ async def execute(run_id: str, request: RunRequest, cancel: asyncio.Event | None
                     name="Baseline invocation" if index == 0 else f"Read-only repeat {index}",
                     category="HTTP reliability", status=state, severity=severity,
                     duration_ms=round(duration, 2), http_status=status, evidence=evidence))
-                store.append_event(run.id, {"type": "scenario.completed", "scenario_id": scenario_id, "status": state, "http_status": status})
+                _scenario_event(run.id, run.scenarios[-1], len(run.scenarios))
                 if "[response body truncated after 1 MB]" in raw_body:
                     contract_ok = None
                     contract_evidence = {"contract": "response body capped at 1 MB", "truncated": True}
@@ -237,12 +263,14 @@ async def execute(run_id: str, request: RunRequest, cancel: asyncio.Event | None
                     category="Response validity", status="INCONCLUSIVE" if contract_ok is None else "PASSED" if contract_ok else "VERIFIED_FAILURE",
                     severity="info" if contract_ok else "medium", duration_ms=round(duration, 2), http_status=status,
                     evidence=contract_evidence))
+                _scenario_event(run.id, run.scenarios[-1], len(run.scenarios))
                 if request.expected_substring:
                     expected_ok = request.expected_substring.casefold() in raw_body.casefold()
                     run.scenarios.append(ScenarioResult(scenario_id=f"expected-{index}", name=f"Expected response content {index+1}",
                         category="Output correctness", status="PASSED" if expected_ok else "VERIFIED_FAILURE",
                         severity="info" if expected_ok else "high", duration_ms=round(duration, 2), http_status=status,
                         evidence={"expected_substring": request.expected_substring, "matched": expected_ok}))
+                    _scenario_event(run.id, run.scenarios[-1], len(run.scenarios))
                 if duration > request.max_latency_seconds * 1000:
                     run.scenarios.append(ScenarioResult(scenario_id=f"latency-{index}", name=f"Latency threshold {index+1}",
                         category="Latency", status="VERIFIED_FAILURE", severity="medium", duration_ms=round(duration, 2),
@@ -251,6 +279,7 @@ async def execute(run_id: str, request: RunRequest, cancel: asyncio.Event | None
                     run.scenarios.append(ScenarioResult(scenario_id=f"latency-{index}", name=f"Latency threshold {index+1}",
                         category="Latency", status="PASSED", duration_ms=round(duration, 2), http_status=status,
                         evidence={"threshold_ms": request.max_latency_seconds * 1000}))
+                _scenario_event(run.id, run.scenarios[-1], len(run.scenarios))
             except httpx.TimeoutException:
                 timeout_ms = min(timeout, request.max_latency_seconds) * 1000
                 run.scenarios.append(ScenarioResult(scenario_id=scenario_id, name="Target invocation timeout",
@@ -260,12 +289,13 @@ async def execute(run_id: str, request: RunRequest, cancel: asyncio.Event | None
                 run.scenarios.append(ScenarioResult(scenario_id=f"latency-{index}", name=f"Latency threshold {index+1}",
                     category="Latency", status="VERIFIED_FAILURE", severity="high", duration_ms=timeout_ms,
                     evidence={"threshold_ms": request.max_latency_seconds * 1000}))
-                store.append_event(run.id, {"type": "scenario.completed", "scenario_id": scenario_id, "status": "VERIFIED_FAILURE", "failure": "timeout"})
+                _scenario_event(run.id, run.scenarios[-2], len(run.scenarios)-1)
+                _scenario_event(run.id, run.scenarios[-1], len(run.scenarios))
             except (httpx.HTTPError, ValueError) as exc:
                 run.scenarios.append(ScenarioResult(scenario_id=scenario_id, name="Target invocation",
                     category="HTTP reliability", status="SETUP_ERROR", evidence={"error_type": type(exc).__name__},
                     limitation="Invocation failed before a reliable application result was captured."))
-                store.append_event(run.id, {"type": "scenario.completed", "scenario_id": scenario_id, "status": "SETUP_ERROR"})
+                _scenario_event(run.id, run.scenarios[-1], len(run.scenarios))
                 run.status = "PARTIAL"
                 break
         unsupported = [("Memory lifecycle and access tests", "Memory integrity"),
@@ -282,8 +312,10 @@ async def execute(run_id: str, request: RunRequest, cancel: asyncio.Event | None
                     name="Instrumented scenarios not started", category="Tool reliability", status="SETUP_ERROR",
                     limitation="Baseline target invocation did not complete; instrumented scenarios were not started."))
             else:
+                _phase(run.id, "INSTRUMENTED_FAULTS")
                 run.scenarios.extend(await _run_instrumented_scenarios(run, request, timeout, headers, cancel))
         if request.memory_assessment:
+            _phase(run.id, "MEMORY_EVALUATION")
             run.scenarios.extend(await memoryscope.evaluate(request, request.memory_assessment, cancel))
         elif not request.expected_substring:
             run.scenarios.append(ScenarioResult(scenario_id="unsupported-output-oracle", name="Semantic output correctness",
@@ -291,6 +323,7 @@ async def execute(run_id: str, request: RunRequest, cancel: asyncio.Event | None
                 limitation="No verified expected answer or grounded reference cases were supplied."))
         if cancel and cancel.is_set():
             run.status = "CANCELLED"
+        _phase(run.id, "SCORING")
         run.scoring = scoring.calculate(run)
         if run.status not in {"CANCELLED", "PARTIAL"}:
             run.status = "COMPLETED"

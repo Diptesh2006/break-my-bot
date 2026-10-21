@@ -463,6 +463,13 @@ async def test_runner_executes_and_persists_observed_scenarios(tmp_path: Path, m
     assert persisted is not None and len(persisted.scenarios) == 15
     assert "test-secret" not in str(persisted.scenarios)
     assert all(Path(path).is_file() for path in persisted.report_paths.values())
+    events = [event for _, event in store.events_after(run.id, 0)]
+    assert any(event["type"] == "run.phase" and event["phase"] == "BASELINE" for event in events)
+    completions = [event for event in events if event["type"] == "scenario.completed"]
+    assert len(completions) == 12
+    assert completions[0]["evidence"]["response_excerpt"] == '{"answer":"ok","api_key":"[REDACTED]"}'
+    assert all("test-secret" not in str(event) for event in events)
+    assert all("expected_substring" not in event["evidence"] for event in completions)
 
 
 @pytest.mark.asyncio

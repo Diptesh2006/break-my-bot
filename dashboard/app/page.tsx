@@ -6,6 +6,7 @@ type Scenario = { scenario_id: string; name: string; category: string; status: s
 type Run = { id: string; project_id?: string | null; status: string; target_url: string; endpoint_path: string; application_name?: string | null; created_at: string; scoring: { overall_score: number | null; coverage_percent: number; observed_weight_percent: number; critical_findings: number; scenario_counts: Record<string, number>; category_scores: Record<string, { score: number | null; coverage_percent: number; conclusive: number }> }; scenarios: Scenario[]; report_paths?: Record<string, string> };
 type Project = { id: string; name: string; target_url: string; created_at: string };
 type Discovery = { reachable: boolean; openapi_found: boolean; application_name?: string; endpoints: Array<{ method: string; path: string; payload_template: Record<string, unknown> }>; diagnostics: string[] };
+type LiveEvent = { type: string; scenario_id?: string; name?: string; category?: string; status?: string; phase?: string; completed_scenarios?: number; evidence?: Record<string, unknown> };
 
 async function api<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(path, { cache: "no-store", ...init, headers: { "Content-Type": "application/json", ...init?.headers } });
@@ -33,7 +34,10 @@ export default function Home() {
   const [discovery, setDiscovery] = useState<Discovery | null>(null);
   const [runs, setRuns] = useState<Run[]>([]);
   const [run, setRun] = useState<Run | null>(null);
-  const [events, setEvents] = useState<string[]>([]);
+  const [events, setEvents] = useState<LiveEvent[]>([]);
+  const [phase, setPhase] = useState("");
+  const [activeScenario, setActiveScenario] = useState("");
+  const [liveScenarios, setLiveScenarios] = useState<LiveEvent[]>([]);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [health, setHealth] = useState("Connecting to API…");
@@ -88,12 +92,25 @@ export default function Home() {
     let parsed: Record<string, unknown>;
     try { parsed = JSON.parse(payload); } catch { setError("Request JSON is invalid."); return; }
     if (method !== "GET" && !window.confirm("Confirm this test invocation is safe and will not cause unwanted side effects.")) return;
-    setBusy(true); setRun(null); setEvents([]);
+    setBusy(true); setRun(null); setEvents([]); setLiveScenarios([]); setPhase("QUEUED"); setActiveScenario("Waiting for worker");
     try {
       const created = await api<{ run_id: string }>("/api/runs", { method: "POST", body: JSON.stringify({ target_url: url, project_id: selectedProjectId || null, endpoint_path: endpoint, method, payload: parsed, profile, expected_substring: expected || null, allow_repeated_post: false, auth_env: authEnv || null, auth_header: authHeader, auth_scheme: authScheme }) });
       const stream = new EventSource(`/api/runs/${encodeURIComponent(created.run_id)}/events`);
-      stream.onmessage = (message) => setEvents((current) => [...current.slice(-80), message.data]);
-      stream.addEventListener("scenario.completed", (message) => setEvents((current) => [...current.slice(-80), (message as MessageEvent).data]));
+      const receive = (type: string) => (message: Event) => {
+        try {
+          const data = JSON.parse((message as MessageEvent).data) as LiveEvent;
+          const item = { ...data, type };
+          setEvents((current) => [...current.slice(-79), item]);
+          if (type === "run.phase") { setPhase(data.phase || "RUNNING"); setActiveScenario(""); }
+          if (type === "scenario.started") { setActiveScenario(data.name || data.scenario_id || "Scenario"); }
+          if (type === "scenario.completed") {
+            setLiveScenarios((current) => [...current.filter((scenario) => scenario.scenario_id !== data.scenario_id), item]);
+            setActiveScenario("");
+          }
+          if (type === "run.completed" || type === "run.cancelled" || type === "run.failed") { setPhase(data.phase || data.status || "FINISHED"); setActiveScenario(""); }
+        } catch { /* Ignore malformed or non-JSON event frames. */ }
+      };
+      ["run.started", "run.phase", "planning.completed", "scenario.started", "scenario.completed", "run.progress", "run.completed", "run.cancelled", "run.failed"].forEach((type) => stream.addEventListener(type, receive(type)));
       let result: Run;
       do {
         await new Promise((resolve) => window.setTimeout(resolve, 650));
@@ -149,7 +166,8 @@ export default function Home() {
         <div className="count-strip"><span><i className="count-pass" />{counts?.PASSED ?? 0} passed</span><span><i className="count-fail" />{counts?.VERIFIED_FAILURE ?? 0} verified failures</span><span><i className="count-other" />{counts?.UNSUPPORTED ?? 0} unsupported</span></div>
         <div className="category-grid">{Object.entries(run.scoring.category_scores).map(([name, item]) => <div className="category-card" key={name}><div><b>{name}</b><span>{item.coverage_percent}% covered</span></div><strong>{item.score == null ? "—" : `${item.score}`}</strong></div>)}</div>
         <h3 className="subhead">Scenario evidence</h3><div className="scenario-list">{run.scenarios.map((scenario) => <details className="scenario-row" key={scenario.scenario_id}><summary><span className="scenario-state" data-status={scenario.status}>{scenario.status.replaceAll("_", " ")}</span><b>{scenario.name}</b><span className="scenario-category">{scenario.category}</span></summary><div className="evidence"><p>{scenario.limitation || "Observed from target response and execution evidence."}</p><pre>{JSON.stringify(scenario.evidence, null, 2)}</pre></div></details>)}</div>
-        <details className="live-events"><summary>Execution events <span>{events.length || "open for persisted history"}</span></summary><pre>{events.length ? events.join("\n") : "Run events are persisted and available via the API event stream."}</pre></details>
+        <section className="live-progress" aria-live="polite"><div className="live-progress-head"><h3 className="subhead">Live execution</h3><span>{phase || run.status}</span></div>{activeScenario && <p className="active-scenario"><span className="spinner" />{activeScenario}</p>}<div className="live-scenario-list">{liveScenarios.map((item) => <div className="live-scenario" key={item.scenario_id}><span className="scenario-state" data-status={item.status}>{item.status?.replaceAll("_", " ")}</span><b>{item.name}</b>{item.evidence?.fault_injected === true && <small>Fault confirmed{item.evidence.cleanup_succeeded === true ? " · cleanup confirmed" : " · cleanup not confirmed"}</small>}</div>)}</div></section>
+        <details className="live-events"><summary>Execution events <span>{events.length || "open for persisted history"}</span></summary><pre>{events.length ? events.map((item) => JSON.stringify(item)).join("\n") : "Run events are persisted and available via the API event stream."}</pre></details>
       </section>}
       <footer><span>BREAKMYBOT · SCORE METHODOLOGY v3</span><span>Local-first · evidence-backed · no fabricated observations</span></footer>
     </main>
