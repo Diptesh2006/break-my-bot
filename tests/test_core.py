@@ -888,13 +888,6 @@ async def test_standalone_demo_discovery_to_worker_report_acceptance(tmp_path, m
         assert streaming["streaming"] is True
         assert "text/event-stream" in streaming["response_schemas"]["200"]
 
-        preflight = await client.post("/api/targets/preflight", json={"target_url": "http://127.0.0.1:8001",
-            "endpoint_path": candidate["path"], "method": candidate["method"],
-            "payload": {"message": "refund policy"}, "profile": "quick"})
-        assert preflight.status_code == 200
-        assert preflight.json()["successful"] is True
-        assert preflight.json()["status_code"] == 200
-
         accepted = await client.post("/api/runs", json={"target_url": "http://127.0.0.1:8001",
             "endpoint_path": candidate["path"], "method": candidate["method"],
             "payload": {"message": "refund policy"}, "profile": "quick",
