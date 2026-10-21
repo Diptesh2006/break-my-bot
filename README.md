@@ -123,7 +123,9 @@ The demo also includes a resettable in-process memory fixture for grounded stale
 ```powershell
 python -m pip install -e ".[dev]"
 pytest
-ruff check src tests
+ruff check src tests examples benchmarks
 ```
 
 See [`docs/scoring-methodology.md`](docs/scoring-methodology.md) for formulas and limits. The optional nRouter planner is bounded and consent-gated; the deterministic default workflow makes no paid provider calls. MemoryScope answer judging is a separate optional integration and does not verify persistent-memory behavior.
+
+To reproduce the deterministic local fault/memory regression benchmark, follow [`benchmarks/README.md`](benchmarks/README.md). It runs against isolated loopback demo services and is explicitly not a comparative research result.
