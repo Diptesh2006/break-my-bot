@@ -155,6 +155,34 @@ def get_run(run_id: str):
     return _current_run(run)
 
 
+@app.get("/api/runs/{run_id}/scenarios")
+def list_run_scenarios(run_id: str, offset: int = Query(default=0, ge=0),
+                       limit: int = Query(default=100, ge=1, le=500)):
+    run = store.get(run_id)
+    if not run:
+        raise HTTPException(404, "Run not found")
+    return {"run_id": run_id, "total": len(run.scenarios),
+        "items": [scenario.model_dump(mode="json") for scenario in run.scenarios[offset:offset + limit]]}
+
+
+@app.get("/api/runs/{run_id}/findings")
+def list_run_findings(run_id: str):
+    run = store.get(run_id)
+    if not run:
+        raise HTTPException(404, "Run not found")
+    findings = [scenario.model_dump(mode="json") for scenario in run.scenarios
+        if scenario.status == "VERIFIED_FAILURE"]
+    return {"run_id": run_id, "total": len(findings), "items": findings}
+
+
+@app.get("/api/runs/{run_id}/score")
+def get_run_score(run_id: str):
+    run = store.get(run_id)
+    if not run:
+        raise HTTPException(404, "Run not found")
+    return {"run_id": run_id, **scoring.calculate(run)}
+
+
 @app.post("/api/runs/{run_id}/cancel")
 def cancel_run(run_id: str):
     run = store.get(run_id)

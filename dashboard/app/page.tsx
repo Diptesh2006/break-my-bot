@@ -95,6 +95,7 @@ export default function Home() {
     setBusy(true); setRun(null); setEvents([]); setLiveScenarios([]); setPhase("QUEUED"); setActiveScenario("Waiting for worker");
     try {
       const created = await api<{ run_id: string }>("/api/runs", { method: "POST", body: JSON.stringify({ target_url: url, project_id: selectedProjectId || null, endpoint_path: endpoint, method, payload: parsed, profile, expected_substring: expected || null, allow_repeated_post: false, auth_env: authEnv || null, auth_header: authHeader, auth_scheme: authScheme }) });
+      setRun(await api<Run>(`/api/runs/${encodeURIComponent(created.run_id)}`));
       const stream = new EventSource(`/api/runs/${encodeURIComponent(created.run_id)}/events`);
       const receive = (type: string) => (message: Event) => {
         try {

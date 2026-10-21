@@ -552,6 +552,14 @@ async def test_standalone_demo_discovery_to_worker_report_acceptance(tmp_path, m
         baseline = next(item for item in run["scenarios"] if item["scenario_id"] == "baseline")
         assert baseline["status"] == "PASSED"
         assert "14 days" in baseline["evidence"]["response_excerpt"]
+        scenarios = await client.get(f"/api/runs/{run_id}/scenarios", params={"offset": 0, "limit": 2})
+        assert scenarios.status_code == 200 and scenarios.json()["total"] == len(run["scenarios"])
+        assert len(scenarios.json()["items"]) == 2
+        findings = await client.get(f"/api/runs/{run_id}/findings")
+        assert findings.status_code == 200 and findings.json()["total"] == 0
+        score = await client.get(f"/api/runs/{run_id}/score")
+        assert score.status_code == 200 and score.json()["run_id"] == run_id
+        assert score.json()["scenario_counts"] == run["scoring"]["scenario_counts"]
         html = await client.get(f"/api/runs/{run_id}/report.html")
         pdf = await client.get(f"/api/runs/{run_id}/report.pdf")
         report_json = await client.get(f"/api/runs/{run_id}/report.json")
