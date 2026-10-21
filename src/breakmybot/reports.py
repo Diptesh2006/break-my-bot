@@ -93,6 +93,15 @@ def generate(run: RunRecord, output_dir: Path) -> dict[str, str]:
         f"<h3>{html.escape(title)}</h3><ul>{''.join(f'<li>{html.escape(str(item))}</li>' for item in (investigation.get(key) or ['None reported.']))}</ul>"
         for key, title in investigation_titles.items()
     ) if investigation else "<p>No LLM investigation was performed.</p>"
+    semantic_cases = [item for item in run.scenarios if item.scenario_id.startswith("judge-")]
+    semantic_rows = "".join(
+        f"<tr><td>{html.escape(item.name)}</td><td>{html.escape(item.status)}</td>"
+        f"<td>{html.escape(str(item.evidence.get('judge', {}).get('confidence', '—')))}</td>"
+        f"<td>{html.escape(str(item.evidence.get('judge', {}).get('explanation', item.limitation or '')))}</td>"
+        f"<td>{html.escape(str(item.evidence.get('judge', {}).get('answer_quote', '')))}</td>"
+        f"<td>{html.escape(str(item.evidence.get('judge', {}).get('reference_quote', '')))}</td></tr>"
+        for item in semantic_cases
+    ) or "<tr><td colspan='6'>No built-in semantic judge cases were run.</td></tr>"
     score = run.scoring.get("overall_score")
     score_text = f"{score}/100" if score is not None else "Not established"
     observed_scopes = ", ".join(run.scoring.get("observed_scopes", [])) or "none"
@@ -105,6 +114,7 @@ def generate(run: RunRecord, output_dir: Path) -> dict[str, str]:
 <h2>Findings</h2>{finding_rows}
 <h2>Scenario planning hypotheses</h2><table><thead><tr><th>Proposal</th><th>Hypothesis</th><th>Capability gate</th><th>Execution</th></tr></thead><tbody>{plan_rows}</tbody></table>
 <h2>LLM investigation · hypotheses, not scored facts</h2><p>Provider: {html.escape(str(run.planning.get('provider', 'not recorded')))} · Model: {html.escape(str(run.planning.get('actual_model', run.planning.get('requested_model', 'not recorded'))))}</p>{investigation_sections}
+<h2>Reference-grounded semantic judgments · fallible model evidence</h2><p>Status: {html.escape(str(run.semantic_judging.get('status', 'not requested')))} · Provider: {html.escape(str(run.semantic_judging.get('provider', 'not recorded')))} · Model: {html.escape(str(run.semantic_judging.get('actual_model', run.semantic_judging.get('requested_model', 'not recorded'))))} · Usage: {html.escape(str(run.semantic_judging.get('usage', 'not reported')))} · Cost: {html.escape(str(run.semantic_judging.get('provider_cost', 'not reported')))}</p><table><thead><tr><th>Case</th><th>Result</th><th>Confidence</th><th>Rationale</th><th>Answer quote</th><th>Reference quote</th></tr></thead><tbody>{semantic_rows}</tbody></table><p>A single model judgment is fallible; review its grounded quotes. The overall score is calculated by the fixed rubric from persisted scenario outcomes.</p>
 <h2>Scenario inventory</h2><table><thead><tr><th>ID</th><th>Scenario</th><th>Category</th><th>Result</th><th>HTTP</th><th>Limitations</th></tr></thead><tbody>{scenario_rows}</tbody></table>
 <h2>Method and limitations</h2><p>Methodology: {html.escape(run.scoring.get('methodology', ''))}. The score describes only executed checks and is not a universal safety certification.</p>
 <p>Unsupported capabilities: {html.escape(', '.join(run.scoring.get('untested_capabilities', [])))}</p><small>Run {html.escape(run.id)} · {html.escape(run.created_at.isoformat())}</small></body></html>"""
@@ -145,6 +155,29 @@ def generate(run: RunRecord, output_dir: Path) -> dict[str, str]:
                 for item in (investigation.get(key) or ["None reported."]))
     else:
         story.append(Paragraph("No LLM investigation was performed.", styles["BodyText"]))
+    story.append(Paragraph("Reference-grounded semantic judgments · fallible model evidence", styles["Heading2"]))
+    story.append(Paragraph("Status: " + html.escape(str(run.semantic_judging.get("status", "not requested")))
+        + " · Provider: " + html.escape(str(run.semantic_judging.get("provider", "not recorded")))
+        + " · Model: " + html.escape(str(run.semantic_judging.get("actual_model", run.semantic_judging.get("requested_model", "not recorded"))))
+        + " · Usage: " + html.escape(str(run.semantic_judging.get("usage", "not reported")))
+        + " · Cost: " + html.escape(str(run.semantic_judging.get("provider_cost", "not reported"))), styles["BodyText"]))
+    if semantic_cases:
+        judge_data = [["Case", "Result", "Confidence", "Rationale"]]
+        judge_data.extend([[item.name[:45], item.status,
+            str(item.evidence.get("judge", {}).get("confidence", "—")),
+            str(item.evidence.get("judge", {}).get("explanation", item.limitation or ""))[:500]]
+            for item in semantic_cases])
+        judge_table = Table(judge_data, repeatRows=1, colWidths=[110, 80, 65, 285])
+        judge_table.setStyle(TableStyle([("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#263746")),
+            ("TEXTCOLOR", (0, 0), (-1, 0), colors.white), ("GRID", (0, 0), (-1, -1), 0.4, colors.grey),
+            ("VALIGN", (0, 0), (-1, -1), "TOP"), ("FONTSIZE", (0, 0), (-1, -1), 8)]))
+        story.append(judge_table)
+        for item in semantic_cases:
+            judged = item.evidence.get("judge", {})
+            story.append(Paragraph(html.escape(f"{item.name}: answer quote: {judged.get('answer_quote', '—')} · reference quote: {judged.get('reference_quote', '—')}"), styles["BodyText"]))
+    else:
+        story.append(Paragraph("No built-in semantic judge cases were run.", styles["BodyText"]))
+    story.append(Paragraph("A single model judgment is fallible; review grounded quotes. The aggregate score uses the fixed rubric, not a model-generated score.", styles["BodyText"]))
     failed = [s for s in run.scenarios if s.status == "VERIFIED_FAILURE"]
     if failed:
         story.append(Paragraph("Verified findings", styles["Heading2"]))

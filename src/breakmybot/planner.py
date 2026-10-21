@@ -23,7 +23,7 @@ OPENAI_COMPATIBLE_PROVIDERS = {
 }
 
 
-def _provider_settings() -> dict[str, str]:
+def _provider_settings(role: str = "planner") -> dict[str, str]:
     explicit_provider = os.getenv("BREAKMYBOT_LLM_PROVIDER", "").strip()
     generic_key = os.getenv("BREAKMYBOT_LLM_API_KEY", "").strip()
     generic_key_env = os.getenv("BREAKMYBOT_LLM_API_KEY_ENV", "").strip()
@@ -35,8 +35,9 @@ def _provider_settings() -> dict[str, str]:
     if provider.casefold() == "nrouter":
         return {"name": "nRouter", "api_key": os.getenv("NROUTER_API_KEY", "").strip(),
             "base_url": os.getenv("NROUTER_BASE_URL", DEFAULT_NROUTER_BASE_URL).strip(),
-            "model": os.getenv("BREAKMYBOT_PLANNER_MODEL", "").strip()
-                or os.getenv("BREAKMYBOT_LLM_MODEL", "").strip(),
+            "model": (os.getenv(f"BREAKMYBOT_{role.upper()}_MODEL", "").strip()
+                or os.getenv("BREAKMYBOT_PLANNER_MODEL", "").strip()
+                or os.getenv("BREAKMYBOT_LLM_MODEL", "").strip()),
             "auth_header": "Authorization", "auth_scheme": "Bearer",
             "token_parameter": os.getenv("BREAKMYBOT_LLM_TOKEN_PARAMETER", "").strip()
                 or "max_completion_tokens",
@@ -49,8 +50,9 @@ def _provider_settings() -> dict[str, str]:
             generic_key = os.getenv(key_env, "").strip()
     safe_name = provider if re.fullmatch(r"[A-Za-z0-9._-]{1,40}", provider) else "openai-compatible"
     return {"name": safe_name, "api_key": generic_key, "base_url": generic_base or preset_base,
-        "model": os.getenv("BREAKMYBOT_PLANNER_MODEL", "").strip()
-            or os.getenv("BREAKMYBOT_LLM_MODEL", "").strip(),
+        "model": (os.getenv(f"BREAKMYBOT_{role.upper()}_MODEL", "").strip()
+            or os.getenv("BREAKMYBOT_PLANNER_MODEL", "").strip()
+            or os.getenv("BREAKMYBOT_LLM_MODEL", "").strip()),
         "auth_header": os.getenv("BREAKMYBOT_LLM_AUTH_HEADER", "Authorization").strip(),
         "auth_scheme": os.getenv("BREAKMYBOT_LLM_AUTH_SCHEME", "Bearer").strip(),
         "token_parameter": os.getenv("BREAKMYBOT_LLM_TOKEN_PARAMETER", "").strip() or "max_tokens",
@@ -61,8 +63,12 @@ def configured_provider_name() -> str:
     return _provider_settings()["name"]
 
 
-def provider_credentials_configured() -> bool:
-    settings = _provider_settings()
+def configured_model_name(role: str = "planner") -> str:
+    return _provider_settings(role)["model"]
+
+
+def provider_credentials_configured(role: str = "planner") -> bool:
+    settings = _provider_settings(role)
     if not settings["api_key"] or not settings["model"]:
         return False
     try:
@@ -74,8 +80,10 @@ def provider_credentials_configured() -> bool:
 
 def public_provider_status() -> dict[str, str | bool]:
     settings = _provider_settings()
+    judge = _provider_settings("judge")
     return {"provider": settings["name"], "model": settings["model"],
-        "configured": provider_credentials_configured()}
+        "configured": provider_credentials_configured(), "judge_model": judge["model"],
+        "judge_configured": provider_credentials_configured("judge")}
 
 
 def _chat_completions_url(settings: dict[str, str]) -> str:

@@ -158,6 +158,38 @@ class DiscoveryResult(BaseModel):
     diagnostics: list[str] = Field(default_factory=list)
 
 
+class SemanticJudgeCase(BaseModel):
+    id: str = Field(pattern=r"^[a-zA-Z0-9][a-zA-Z0-9_-]{0,63}$")
+    name: str = Field(min_length=1, max_length=120)
+    question: str = Field(min_length=1, max_length=2000)
+    reference: str = Field(min_length=1, max_length=8000)
+    expected: str = Field(min_length=1, max_length=2000)
+    payload: dict[str, Any]
+    required_literals: list[str] = Field(default_factory=list, max_length=10)
+    forbidden_literals: list[str] = Field(default_factory=list, max_length=10)
+
+    @model_validator(mode="after")
+    def bound_case_content(self):
+        if len(json.dumps(self.payload, ensure_ascii=False).encode("utf-8")) > 16384:
+            raise ValueError("semantic judge case payload must be at most 16 KiB")
+        if any(not item.strip() or len(item) > 1000 for item in self.required_literals + self.forbidden_literals):
+            raise ValueError("semantic judge literals must be non-empty and at most 1000 characters")
+        return self
+
+
+class SemanticJudgeAssessment(BaseModel):
+    cases: list[SemanticJudgeCase] = Field(min_length=1, max_length=20)
+
+    @model_validator(mode="after")
+    def validate_unique_cases_and_size(self):
+        ids = [case.id for case in self.cases]
+        if len(ids) != len(set(ids)):
+            raise ValueError("semantic judge case identifiers must be unique")
+        if len(self.model_dump_json().encode("utf-8")) > 131072:
+            raise ValueError("semantic judge assessment must be at most 128 KiB")
+        return self
+
+
 class RunRequest(BaseModel):
     target_url: HttpUrl
     project_id: str | None = Field(default=None, pattern=r"^project-[a-f0-9]{12}$")
@@ -174,6 +206,8 @@ class RunRequest(BaseModel):
     auth_header: str = Field(default="Authorization", pattern=r"^[A-Za-z0-9-]{1,64}$")
     auth_scheme: str = Field(default="Bearer", max_length=24, pattern=r"^[A-Za-z0-9_-]*$")
     memory_assessment: "MemoryAssessment | None" = None
+    semantic_judge: SemanticJudgeAssessment | None = None
+    semantic_judge_consent: bool = False
     instrumented_memory_assessment: InstrumentedMemoryAssessment | None = None
     execute_memory_scenarios: bool = False
     instrumented_assessment: InstrumentedAssessment | None = None
@@ -198,6 +232,10 @@ class RunRequest(BaseModel):
             raise ValueError("concurrency probe must be disabled (0) or request 2-5 concurrent calls")
         if self.concurrency_requests and self.method != "GET" and not self.allow_repeated_post:
             raise ValueError("non-GET concurrency probes require explicit repeated-call authorization")
+        if self.semantic_judge is not None and not self.semantic_judge_consent:
+            raise ValueError("semantic judging requires explicit provider-data consent")
+        if self.semantic_judge is not None and self.method != "GET" and not self.allow_repeated_post:
+            raise ValueError("semantic judge cases require explicit repeated-call authorization for non-GET targets")
         if self.instrumented_memory_assessment is not None and not self.execute_memory_scenarios:
             raise ValueError("instrumented memory scenarios require explicit execution consent")
         if self.execute_memory_scenarios and self.instrumented_memory_assessment is None:
@@ -282,6 +320,7 @@ class RunRecord(BaseModel):
     scenarios: list[ScenarioResult] = Field(default_factory=list)
     scoring: dict[str, Any] = Field(default_factory=dict)
     planning: dict[str, Any] = Field(default_factory=dict)
+    semantic_judging: dict[str, Any] = Field(default_factory=dict)
     report_paths: dict[str, str] = Field(default_factory=dict)
     error: str | None = None
 

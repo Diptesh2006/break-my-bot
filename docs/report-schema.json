@@ -21,6 +21,7 @@
     "scenarios": {"type": "array", "items": {"$ref": "#/$defs/ScenarioResult"}},
     "scoring": {"type": "object", "additionalProperties": true},
     "planning": {"type": "object", "additionalProperties": true},
+    "semantic_judging": {"type": "object", "additionalProperties": true},
     "report_paths": {
       "type": "object",
       "properties": {"html": {"const": "report.html"}, "pdf": {"const": "report.pdf"}, "json": {"const": "report.json"}},

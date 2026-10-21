@@ -10,7 +10,7 @@ from uuid import uuid4
 import httpx
 from urllib.parse import urlsplit, urlunsplit
 
-from . import instrumentation, memory_adapter, memoryscope, planner, reports, scoring, store
+from . import instrumentation, memory_adapter, memoryscope, planner, reports, scoring, semantic_judge, store
 from .models import (InstrumentedAssessment, InstrumentedFaultChain, InstrumentedToolFault,
                      MemoryInvocation)
 from .models import RunRecord, RunRequest, ScenarioResult
@@ -28,7 +28,7 @@ def _scenario_event(run_id: str, result: ScenarioResult, completed: int) -> None
         "expected_substring_passed", "threshold_ms", "timeout_ms", "error_type",
         "response_size_bytes",
         "contract", "body_nonempty", "parse_passed", "steps", "assertions",
-        "concurrency", "request_statuses", "request_durations_ms", "error_types"}
+        "concurrency", "request_statuses", "request_durations_ms", "error_types", "judge"}
     store.append_event(run_id, {"type": "scenario.completed", "scenario_id": result.scenario_id,
         "name": result.name, "category": result.category, "status": result.status,
         "severity": result.severity, "http_status": result.http_status,
@@ -521,6 +521,113 @@ async def _run_concurrency_probe(request: RunRequest, timeout: float,
     return result
 
 
+async def _run_semantic_judge(run: RunRecord, request: RunRequest, timeout: float,
+                              headers: dict[str, str] | None,
+                              cancel: asyncio.Event | None) -> list[ScenarioResult]:
+    config = request.semantic_judge
+    if config is None:
+        return []
+    if not planner.provider_credentials_configured("judge"):
+        provider_name = planner.configured_provider_name()
+        run.semantic_judging = {"status": "unavailable", "provider": provider_name, "judged_cases": 0,
+            "reason": "Judge credentials/model or provider URL are unavailable; no case target calls were made."}
+        return [ScenarioResult(scenario_id=f"judge-{case.id}", name=case.name,
+            category="Output correctness", status="SETUP_ERROR",
+            limitation="Judge provider is not configured; target case invocation was skipped.")
+            for case in config.cases]
+    results: list[ScenarioResult] = []
+    candidates: list[dict] = []
+    case_by_id = {case.id: case for case in config.cases}
+    token = os.getenv(request.auth_env) if request.auth_env else None
+    _phase(run.id, "SEMANTIC_JUDGING", cases=len(config.cases))
+    for case in config.cases:
+        if cancel and cancel.is_set():
+            completed_ids = {item.scenario_id for item in results}
+            results.extend(ScenarioResult(scenario_id=f"judge-{pending.id}", name=pending.name,
+                category="Output correctness", status="SKIPPED",
+                limitation="Semantic judge case was not completed because the run was cancelled.")
+                for pending in config.cases if f"judge-{pending.id}" not in completed_ids)
+            run.semantic_judging = {"status": "cancelled", "provider": planner.configured_provider_name(),
+                "judged_cases": 0}
+            break
+        store.append_event(run.id, {"type": "scenario.started", "scenario_id": f"judge-{case.id}",
+            "name": case.name, "category": "Output correctness"})
+        try:
+            status, raw_body, duration, content_type = await invoke(str(request.target_url), request.endpoint_path,
+                request.method, case.payload, min(timeout, request.max_latency_seconds),
+                docker_mode=os.getenv("BREAKMYBOT_DOCKER_MODE", "false").lower() == "true", headers=headers)
+            answer = semantic_judge.extract_answer(raw_body, content_type)
+            answer = redact_text(answer, case.payload, (token,) if token else ())[:12000]
+            base_evidence = {"http_status": status, "duration_ms": round(duration, 2),
+                "content_type": content_type, "response_excerpt": answer[:1200],
+                "response_size_bytes": len(raw_body.encode("utf-8"))}
+            violations = []
+            if not 200 <= status < 300:
+                violations.append(f"Target returned HTTP {status} rather than 2xx")
+            folded = answer.casefold()
+            missing = [literal for literal in case.required_literals if literal.casefold() not in folded]
+            forbidden = [literal for literal in case.forbidden_literals if literal.casefold() in folded]
+            if missing:
+                violations.append("Required literal checks failed")
+            if forbidden:
+                violations.append("Forbidden literal checks failed")
+            if violations:
+                results.append(ScenarioResult(scenario_id=f"judge-{case.id}", name=case.name,
+                    category="Output correctness", status="VERIFIED_FAILURE", severity="medium",
+                    duration_ms=round(duration, 2), http_status=status,
+                    evidence={**base_evidence, "deterministic_failures": violations,
+                        "missing_required_literals": missing, "present_forbidden_literals": forbidden,
+                        "judge_called": False}))
+            else:
+                candidates.append({"case_id": case.id, "question": case.question,
+                    "reference": case.reference, "expected": case.expected, "answer": answer})
+                candidates[-1]["target_observation"] = base_evidence
+        except (httpx.HTTPError, ValueError):
+            results.append(ScenarioResult(scenario_id=f"judge-{case.id}", name=case.name,
+                category="Output correctness", status="SETUP_ERROR",
+                limitation="Target invocation failed before a grounded semantic judgment could be made."))
+
+    if candidates and not (cancel and cancel.is_set()):
+        provider_result = await semantic_judge.judge_answers(candidates)
+        run.semantic_judging = {key: provider_result[key] for key in (
+            "status", "provider", "requested_model", "actual_model", "usage", "provider_cost", "reason")
+            if key in provider_result}
+        run.semantic_judging["judged_cases"] = len(provider_result.get("judgments", []))
+        judgments = {item["case_id"]: item for item in provider_result.get("judgments", [])}
+        for case_id, case in case_by_id.items():
+            candidate = next((item for item in candidates if item["case_id"] == case_id), None)
+            if candidate is None:
+                continue
+            judgment = judgments.get(case_id)
+            if provider_result.get("status") != "completed" or judgment is None:
+                results.append(ScenarioResult(scenario_id=f"judge-{case.id}", name=case.name,
+                    category="Output correctness", status="SETUP_ERROR",
+                    evidence={"judge_provider": provider_result.get("provider", "configured provider")},
+                    limitation=provider_result.get("reason", "The provider did not return a validated judgment.")))
+                continue
+            state = {"pass": "PASSED", "fail": "VERIFIED_FAILURE", "inconclusive": "INCONCLUSIVE"}[judgment["verdict"]]
+            evidence = {**candidate["target_observation"], "judge": {key: judgment[key] for key in (
+                "verdict", "confidence", "confidence_threshold", "explanation", "answer_quote", "reference_quote")}}
+            results.append(ScenarioResult(scenario_id=f"judge-{case.id}", name=case.name,
+                category="Output correctness", status=state,
+                severity="medium" if state == "VERIFIED_FAILURE" else "info",
+                duration_ms=candidate["target_observation"]["duration_ms"],
+                http_status=candidate["target_observation"]["http_status"], evidence=evidence,
+                limitation="LLM reference-grounded judgment; review the quoted evidence before acting."))
+    elif candidates:
+        completed_ids = {item.scenario_id for item in results}
+        results.extend(ScenarioResult(scenario_id=f"judge-{case.id}", name=case.name,
+            category="Output correctness", status="SKIPPED",
+            limitation="Semantic judgment was not sent because the run was cancelled.")
+            for case in config.cases if f"judge-{case.id}" not in completed_ids)
+    elif results and run.semantic_judging == {}:
+        run.semantic_judging = {"status": "deterministic_only", "provider": planner.configured_provider_name(),
+            "judged_cases": 0, "reason": "Deterministic checks failed or target invocation was inconclusive; no provider call was needed."}
+    for index, result in enumerate(results, 1):
+        _scenario_event(run.id, result, len(run.scenarios) + index)
+    return results
+
+
 async def execute(run_id: str, request: RunRequest, cancel: asyncio.Event | None = None) -> RunRecord:
     run = store.get(run_id)
     if not run:
@@ -672,6 +779,15 @@ async def execute(run_id: str, request: RunRequest, cancel: asyncio.Event | None
             store.save(run)
             store.append_event(run.id, {"type": "planning.completed", "status": run.planning.get("status"),
                 "scenario_count": len(run.planning.get("scenarios", []))})
+        if request.semantic_judge is not None:
+            if run.status == "PARTIAL":
+                run.semantic_judging = {"status": "skipped", "reason": "Baseline invocation failed."}
+                run.scenarios.extend(ScenarioResult(scenario_id=f"judge-{case.id}", name=case.name,
+                    category="Output correctness", status="SETUP_ERROR",
+                    limitation="Semantic case was not invoked because the baseline failed.")
+                    for case in request.semantic_judge.cases)
+            else:
+                run.scenarios.extend(await _run_semantic_judge(run, request, timeout, headers, cancel))
         if request.concurrency_requests:
             if run.status == "PARTIAL":
                 concurrency_result = ScenarioResult(scenario_id="concurrency",

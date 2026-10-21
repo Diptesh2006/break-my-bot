@@ -65,6 +65,7 @@ def test(
         help="Opt in to 2-5 simultaneous baseline requests; 0 disables the probe"),
     auth_env: str | None = typer.Option(None, "--auth-env", help="Environment variable name containing the target bearer token"),
     memory_cases: Path | None = typer.Option(None, "--memory-cases", help="JSON array of approved MemoryScope reference cases"),
+    judge_cases: Path | None = typer.Option(None, "--judge-cases", help="JSON reference cases for BreakMyBot's built-in semantic judge"),
     memory_agent_path: str | None = typer.Option(None, "--memory-agent-path", help="SSE chat path on the same target origin"),
     memory_auth_env: str | None = typer.Option(None, "--memory-auth-env", help="MemoryScope agent auth environment variable name"),
     memory_scenarios: Path | None = typer.Option(None, "--memory-scenarios", help="JSON scenarios for the target's opt-in real-memory adapter"),
@@ -197,6 +198,27 @@ def test(
         consent = Confirm.ask("MemoryScope will send these references and the target answers to the configured nRouter judge. Consent?", default=False)
         memory_assessment = {"agent_path": memory_agent_path or endpoint, "cases": cases,
             "send_to_nrouter": consent, "auth_env": memory_auth_env}
+    semantic_judge = None
+    semantic_judge_consent = False
+    if judge_cases:
+        if method != "GET" and not allow_repeated_post:
+            raise typer.BadParameter("semantic judge cases add target calls; use --allow-repeated-post and confirm safety")
+        try:
+            judge_rows = json.loads(judge_cases.read_text(encoding="utf-8"))
+            from .models import SemanticJudgeAssessment
+            validated_judge = SemanticJudgeAssessment(cases=judge_rows)
+        except (OSError, json.JSONDecodeError, ValidationError, TypeError) as exc:
+            raise typer.BadParameter("judge-cases must be a valid JSON array matching the documented schema") from exc
+        if not planner.provider_credentials_configured("judge"):
+            console.print("No semantic judge key/model is configured; continuing without semantic judgments.")
+        elif Confirm.ask(
+            f"Send each case's question, approved reference, expected behavior, and redacted target answer to "
+            f"{planner.configured_provider_name()} / {planner.configured_model_name('judge')} "
+            "for one batched semantic judgment? Consent?", default=False):
+            semantic_judge = validated_judge.model_dump(mode="json")
+            semantic_judge_consent = True
+        else:
+            console.print("Skipping built-in semantic judging; no judge provider call will be made.")
     instrumented_memory_assessment = None
     execute_memory_scenarios = False
     if memory_scenarios:
@@ -272,6 +294,7 @@ def test(
         "expected_substring": expected, "allow_repeated_post": allow_repeated_post,
         "concurrency_requests": concurrency_requests, "auth_env": auth_env,
         "memory_assessment": memory_assessment, "instrumented_assessment": instrumented_assessment,
+        "semantic_judge": semantic_judge, "semantic_judge_consent": semantic_judge_consent,
         "instrumented_memory_assessment": instrumented_memory_assessment,
         "execute_memory_scenarios": execute_memory_scenarios,
         "use_nrouter_planner": plan_with_nrouter,
