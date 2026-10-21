@@ -4,7 +4,9 @@
 
 Turbulence remains an independently versioned FastAPI/Next.js product. Its current deterministic injector evaluates faults at the Concentrate client boundary. The simulator creates simulated provider faults; they are not incidents in the target application. Its agent safety outcomes use fixtures and are likewise not external-target observations.
 
-BreakMyBot's current public run model stores target endpoint, observed status/body evidence, measured latency, explicit assertions, and unsupported capabilities. A future `FaultEngine` adapter may be added only when a target opts in through instrumentation or a controlled dependency proxy. The adapter must return injection provenance and cleanup evidence before a result is attributed to the target. There are no absolute filesystem imports or copied Turbulence demo results.
+BreakMyBot's current public run model stores target endpoint, observed status/body evidence, measured latency, explicit assertions, and unsupported capabilities. Its new `breakmybot.instrumentation.ToolFaultController` is an opt-in in-process SDK seam: a developer routes tool calls through `controller.invoke(...)` inside an `async with` scope, and it can inject bounded timeout, exception, empty/malformed response, delay, or deterministic intermittent faults. Events identify which tool fault was injected. This does not instrument arbitrary HTTP apps, and the current BreakMyBot run orchestrator does not arm this SDK automatically; those scenarios must remain unsupported until an explicit target adapter connects setup, evidence collection, and cleanup to a run.
+
+Turbulence remains independently versioned and its fault engine continues to act at its own Concentrate client boundary. It is not yet a pluggable BreakMyBot `FaultEngine`. Sharing results requires an explicit, target-scoped adapter contract with injection provenance and cleanup evidence. There are no absolute filesystem imports or copied Turbulence demo results.
 
 ## MemoryScope adapter
 

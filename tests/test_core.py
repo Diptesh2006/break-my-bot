@@ -7,6 +7,7 @@ from breakmybot import runner, store
 from breakmybot.api import app as api_app
 from breakmybot.models import MemoryAssessment, MemoryCase, RunRecord, RunRequest, ScenarioResult
 from breakmybot.memoryscope import evaluate as evaluate_memory
+from breakmybot.instrumentation import ToolFault, instrument_tool_calls
 from breakmybot.planner import mock_plan, plan
 from breakmybot.reports import generate
 from breakmybot.redaction import redact_payload, redact_text
@@ -28,6 +29,18 @@ def test_response_redaction_hides_echoed_credentials_and_bearer_tokens():
     response = 'echo=private-value Authorization: Bearer abc.def.ghi'
     assert redact_text(response, {"api_key": "private-value"}) == (
         'echo=[REDACTED] Authorization: Bearer [REDACTED]')
+
+
+@pytest.mark.asyncio
+async def test_instrumented_tool_timeout_is_explicit_and_recorded():
+    controller = instrument_tool_calls(ToolFault(tool="lookup", kind="timeout"))
+    async with controller:
+        with pytest.raises(TimeoutError, match="Injected timeout"):
+            await controller.invoke("lookup", lambda: "must not run")
+    assert controller.events == [{"type": "fault.injected", "tool": "lookup", "kind": "timeout",
+                                  "call": 1, "source": "instrumented_tool"}]
+    with pytest.raises(RuntimeError, match="async with"):
+        await controller.invoke("lookup", lambda: "inactive")
 
 
 def test_openapi_discovery_prefers_chat_and_builds_payload():

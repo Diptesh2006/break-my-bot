@@ -79,6 +79,19 @@ SQLite run records and report artifacts are stored under `data/`. The current AP
 
 The reference audit is in [`docs/reference-audit.md`](docs/reference-audit.md). Turbulence's seeded faults currently wrap its own Concentrate adapter and cannot affect an arbitrary target. MemoryScope tests a real external SSE endpoint against supplied references but requires an nRouter judge model and explicit consent; its current beta does not cover persistent memory lifecycle. BreakMyBot does not import their code via local paths or transfer their internal demo scores. Adapter contracts and these limits are documented in [`docs/integration-boundaries.md`](docs/integration-boundaries.md).
 
+Agent developers can opt into the in-process tool fault SDK for test fixtures:
+
+```python
+from breakmybot.instrumentation import ToolFault, instrument_tool_calls
+
+faults = instrument_tool_calls(ToolFault(tool="catalog", kind="timeout"))
+async with faults:
+    result = await faults.invoke("catalog", catalog_lookup, "item-42")
+    # faults.events contains explicit injection/call evidence
+```
+
+The target must route its own tool calls through this controller. BreakMyBot does not remotely arm it yet, so these faults are not included in normal HTTP assessment scores.
+
 An optional MemoryScope API bridge is available for grounded answer evaluation. Configure `MEMORYSCOPE_API_URL` for the separately running service, then pass an approved case array with `--memory-cases cases.json`. BreakMyBot asks for consent before sending reference cases and target answers to the nRouter judge. Configure the MemoryScope service's `NROUTER_API_KEY`, `NROUTER_JUDGE_MODEL`, and target-origin allowlist there. This evaluates answers against references; it does not test persistent-memory lifecycle or internal memory controls.
 
 An optional structured scenario planner can be enabled with `--plan-with-nrouter` after configuring `NROUTER_API_KEY` and `BREAKMYBOT_PLANNER_MODEL`. It sends only the application name, endpoint path, method, and payload field names after a separate consent prompt. Proposed scenarios are capability-gated, recorded as hypotheses, and never automatically executed. Each run makes at most one bounded planning call; usage is recorded when nRouter returns it.
