@@ -165,12 +165,42 @@ def run_benchmark(api_url: str, target_url: str) -> dict:
         chain_case = _case_summary("known bug: unsafe cascading-fault fallback", chain_runs,
             "instrumented-tool-1", "VERIFIED_FAILURE")
 
-    cases = [fixed_control, stale_memory, single_case, chain_case]
+        duplicate_fault = {"auth_env": INSTRUMENTATION_ENV, "faults": [{"tool": "refund_commit",
+            "kind": "lost_acknowledgment", "on_call": 1,
+            "expected_substring": "side-effect count 1"}], "chains": []}
+        duplicate_runs = []
+        duplicate_counts = []
+        idempotent_runs = []
+        idempotent_counts = []
+        for attempt in range(2):
+            _request(client, "POST", f"{target_url}/api/refund/reset")
+            duplicate_runs.append(_assessment(client, api_url, target_url,
+                name=f"lost-ack-duplicate-action-{attempt + 1}", endpoint="/api/refund/retry",
+                payload={}, instrumented=duplicate_fault))
+            duplicate_counts.append(_request(client, "GET", f"{target_url}/api/refund/state")["side_effect_count"])
+            _request(client, "POST", f"{target_url}/api/refund/reset")
+            idempotent_runs.append(_assessment(client, api_url, target_url,
+                name=f"lost-ack-idempotency-control-{attempt + 1}", endpoint="/api/refund/retry",
+                payload={"idempotency_key": f"breakmybot-test-{attempt + 1}"}, instrumented=duplicate_fault))
+            idempotent_counts.append(_request(client, "GET", f"{target_url}/api/refund/state")["side_effect_count"])
+        duplicate_action = _case_summary("known bug: duplicate action after lost acknowledgment",
+            duplicate_runs, "instrumented-tool-1", "VERIFIED_FAILURE")
+        idempotent_control = _case_summary("control: idempotent retry after lost acknowledgment",
+            idempotent_runs, "instrumented-tool-1", "PASSED")
+        for case, counts, expected_count in (
+                (duplicate_action, duplicate_counts, 2), (idempotent_control, idempotent_counts, 1)):
+            for attempt, count in zip(case["attempts"], counts):
+                attempt["observed_side_effect_count"] = count
+            case["expected_side_effect_count"] = expected_count
+            case["outcome_match"] = case["outcome_match"] and all(count == expected_count for count in counts)
+            case["reproduced_on_both_attempts"] = len(counts) == 2 and case["outcome_match"]
+
+    cases = [fixed_control, stale_memory, single_case, chain_case, duplicate_action, idempotent_control]
     return {
         "schema_version": "breakmybot-demo-benchmark-v1",
         "created_at": datetime.now(timezone.utc).isoformat(),
         "target_url": target_url,
-        "methodology": "Deterministic local fixture; 2 repetitions per condition; one fixed control and three seeded known-bug conditions.",
+        "methodology": "Deterministic local fixture; 2 repetitions per condition; fixed controls and four seeded known-bug conditions, including a measured lost-acknowledgment side-effect ablation.",
         "metrics": _metrics(cases),
         "cases": cases,
         "limitations": [
@@ -179,6 +209,7 @@ def run_benchmark(api_url: str, target_url: str) -> dict:
             "The fixed control is one case and cannot estimate general false-positive rates.",
             "Timing is local target request duration, not end-to-end analyst time or cost.",
             "The instrumented tool cases require the demo started with DEMO_UNSAFE_TOOL_FALLBACK=true and target instrumentation enabled.",
+            "Duplicate-action conclusions apply only to the isolated fake refund service; side-effect counts are read from its resettable state endpoint.",
         ],
     }
 

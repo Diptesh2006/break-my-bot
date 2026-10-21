@@ -1,6 +1,6 @@
 # Deterministic demo benchmark
 
-`verify_demo.py` exercises the real BreakMyBot queue and runner against the isolated demo agent. It runs two repetitions each of a passing current-memory control, a seeded stale-memory bug, a single injected tool timeout, and an ordered two-tool failure chain. It emits the actual run IDs, expected statuses, captured evidence, execution success, simple reproducibility, local request timing, and a JSON artifact.
+`verify_demo.py` exercises the real BreakMyBot queue and runner against the isolated demo agent. It runs two repetitions each of current-memory controls, a seeded stale-memory bug, a single injected tool timeout, an ordered two-tool failure chain, and a lost-acknowledgment/retry experiment both without and with an idempotency key. For the latter, it reads the fake service's resettable state and requires two actual side effects without idempotency and one with it. It emits the actual run IDs, expected statuses, captured evidence, execution success, reproducibility, side-effect counts, local request timing, and a JSON artifact.
 
 This deterministic product regression is distinct from the opt-in strategy comparison below. It reports zero provider tokens/cost because it makes no model calls. Neither harness estimates a general false-positive rate or establishes strategy superiority.
 
