@@ -37,6 +37,24 @@ def test_demo_agent_memory_can_be_seeded_to_reproduce_and_reset_stale_answer():
         assert "30 days" not in response.text
 
 
+def test_demo_agent_detects_contradictory_memory_and_can_reproduce_unsafe_behavior(monkeypatch):
+    contradiction = (
+        "Refunds are available within 14 days. "
+        "Refunds are not available within 14 days."
+    )
+    with TestClient(DEMO.app) as client:
+        client.post("/api/memory/seed", json={"value": contradiction})
+        safe = client.post("/api/chat", json={"message": "What is the refund window?"}).json()
+        assert "conflicts" in safe["answer"]
+        assert "contact support" in safe["answer"]
+
+        monkeypatch.setenv("DEMO_UNSAFE_MEMORY_CONTRADICTION", "true")
+        unsafe = client.post("/api/chat", json={"message": "What is the refund window?"}).json()
+        assert unsafe["answer"] == contradiction
+        monkeypatch.delenv("DEMO_UNSAFE_MEMORY_CONTRADICTION")
+        assert client.post("/api/memory/reset").json() == {"status": "reset"}
+
+
 def test_demo_agent_opt_in_memory_adapter_restores_real_agent_memory(monkeypatch):
     monkeypatch.setenv("BREAKMYBOT_MEMORY_ENABLED", "true")
     monkeypatch.setenv("BREAKMYBOT_MEMORY_TOKEN", "demo-memory-adapter-token-0123456789")
@@ -48,7 +66,7 @@ def test_demo_agent_opt_in_memory_adapter_restores_real_agent_memory(monkeypatch
 
     with TestClient(target.app) as client:
         manifest = client.get("/__breakmybot__/memory/capabilities").json()
-        assert manifest["categories"] == ["outdated_knowledge"]
+        assert manifest["categories"] == ["outdated_knowledge", "contradictory_information"]
         session_id = "b" * 32
         headers = {"Authorization": "Bearer demo-memory-adapter-token-0123456789"}
         armed = client.put(f"/__breakmybot__/memory/sessions/{session_id}", headers=headers,

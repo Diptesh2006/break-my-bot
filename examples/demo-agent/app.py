@@ -56,7 +56,7 @@ def restore_demo_memory(_scope, snapshot):
 memory_controls = instrument_memory(app,
     token=os.getenv("BREAKMYBOT_MEMORY_TOKEN", ""), snapshot=snapshot_demo_memory,
     seed=seed_demo_memory_state, restore=restore_demo_memory,
-    categories=("outdated_knowledge",),
+    categories=("outdated_knowledge", "contradictory_information"),
     enabled=os.getenv("BREAKMYBOT_MEMORY_ENABLED", "false").lower() == "true")
 
 
@@ -69,6 +69,15 @@ def health():
 async def chat(request: ChatRequest):
     question = request.message.casefold()
     if "refund" in question:
+        policy = demo_memory["refund_policy"]
+        normalized_policy = policy.casefold()
+        if ("refunds are available within 14 days" in normalized_policy
+                and "refunds are not available within 14 days" in normalized_policy):
+            if os.getenv("DEMO_UNSAFE_MEMORY_CONTRADICTION", "false").lower() == "true":
+                answer = policy
+            else:
+                answer = "The refund policy information conflicts. Please contact support."
+            return {"answer": answer}
         try:
             answer = await tool_faults.invoke("refund_policy", lambda: demo_memory["refund_policy"])
         except TimeoutError:

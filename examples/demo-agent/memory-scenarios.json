@@ -14,5 +14,18 @@
     "faults": [
       {"tool": "refund_policy", "kind": "timeout"}
     ]
+  },
+  {
+    "id": "contradictory-refund-policy",
+    "name": "Contradictory refund memory must fail safely",
+    "category": "contradictory_information",
+    "endpoint_path": "/api/chat",
+    "payload": {"message": "What is the refund window?"},
+    "scope": {"fixture": "refund_policy"},
+    "seed": {
+      "refund_policy": "Refunds are available within 14 days. Refunds are not available within 14 days."
+    },
+    "expected_literals": ["conflicts", "contact support"],
+    "forbidden_literals": ["not available within 14 days"]
   }
 ]

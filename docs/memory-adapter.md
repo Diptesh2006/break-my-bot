@@ -51,7 +51,7 @@ Example sequence for two user sessions (the target payload schema and persistenc
 
 ## Run against the bundled demo
 
-The demo advertises only `outdated_knowledge`; its memory fixture is intentionally global and is not a tenant-isolation or cross-session implementation. To try the combined stale-memory + tool-timeout/fallback case, set the same random 32+ character control tokens in the demo and BreakMyBot API/worker environments (for Compose, add them to the ignored root `.env`), enable both demo adapters, then start the agent:
+The demo advertises `outdated_knowledge` and `contradictory_information`; its memory fixture is intentionally global and is not a tenant-isolation or cross-session implementation. Its cases cover stale-memory recovery (combined with a tool timeout) and contradictory-policy safe fallback. Set the same random 32+ character control tokens in the demo and BreakMyBot API/worker environments (for Compose, add them to the ignored root `.env`), enable both demo adapters, then start the agent:
 
 ```powershell
 $env:BREAKMYBOT_MEMORY_ENABLED = "true"
@@ -61,12 +61,12 @@ $env:BREAKMYBOT_INSTRUMENTATION_TOKEN = "replace-with-another-random-32-characte
 python -m uvicorn app:app --app-dir examples/demo-agent --host 127.0.0.1 --port 8001
 ```
 
-Run the explicit fixture case (the CLI separately asks for baseline, fault-injection, memory-seeding, and repeated-call safety consent):
+Run the explicit fixture cases (the CLI separately asks for baseline, fault-injection, memory-seeding, and repeated-call safety consent):
 
 ```powershell
 breakmybot test --url http://localhost:8001 --endpoint /api/chat --payload-json '{"message":"What is the refund window?"}' --instrumented-faults examples/demo-agent/memory-combined-faults.json --memory-scenarios examples/demo-agent/memory-scenarios.json --allow-repeated-post
 ```
 
-The fixture snapshots and seeds a stale 30-day policy, arms a timeout in the real `refund_policy` tool wrapper in the same session, and invokes the agent. The safe fallback should say to contact support without repeating the stale value; the report requires target-confirmed injection plus both cleanup receipts. Set `DEMO_UNSAFE_TOOL_FALLBACK=true` in the isolated demo process to verify that an unsafe fallback becomes a finding. This is a deterministic local regression demonstration, not evidence about a production agent. The low-level memory seed/reset demo routes are unauthenticated; bind to `0.0.0.0` only when a local Docker container must reach the demo, and firewall that port to the local Docker network.
+The stale-memory fixture seeds a 30-day policy, arms a timeout in the real `refund_policy` tool wrapper in the same session, and invokes the agent. The safe fallback should direct the user to support without repeating the stale value; the report requires target-confirmed injection plus both cleanup receipts. The contradictory-memory case seeds incompatible refund rules and expects the agent to identify the conflict and direct the user to support. Set `DEMO_UNSAFE_TOOL_FALLBACK=true` or `DEMO_UNSAFE_MEMORY_CONTRADICTION=true` in the isolated demo process to verify that the respective unsafe behavior becomes a finding. This is a deterministic local regression demonstration, not evidence about a production agent. The low-level memory seed/reset demo routes are unauthenticated; bind to `0.0.0.0` only when a local Docker container must reach the demo, and firewall that port to the local Docker network.
 
 If a target has no adapter or does not advertise a requested category, the report records `UNSUPPORTED` with `NOT TESTED — memory interface unavailable`; BreakMyBot never substitutes its internal demo state or MemoryScope's internal benchmark results for the selected target.
