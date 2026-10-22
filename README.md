@@ -20,7 +20,7 @@ Requires Python 3.11+. For the full stack, install Docker Compose, then:
 git clone https://github.com/Diptesh2006/break-my-bot.git
 cd break-my-bot
 Copy-Item .env.example .env
-# Edit .env and replace POSTGRES_PASSWORD with a private local password.
+# Edit .env and replace POSTGRES_PASSWORD with a strong private password.
 docker compose up -d --build
 ```
 

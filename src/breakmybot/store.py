@@ -16,6 +16,11 @@ def data_dir() -> Path:
     return path
 
 
+def postgres_configured() -> bool:
+    return bool(os.getenv("BREAKMYBOT_DATABASE_URL", "").strip()
+        or os.getenv("PGHOST", "").strip())
+
+
 def _migrate(db: sqlite3.Connection) -> None:
     """Apply ordered, idempotent SQLite schema migrations."""
     db.execute("CREATE TABLE IF NOT EXISTS schema_migrations (version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)")
@@ -74,14 +79,25 @@ def _migrate_postgres(db: PostgresConnection) -> None:
 
 def connect():
     database_url = os.getenv("BREAKMYBOT_DATABASE_URL", "").strip()
-    if database_url:
-        if not database_url.startswith(("postgresql://", "postgres://")):
+    if postgres_configured():
+        if database_url and not database_url.startswith(("postgresql://", "postgres://")):
             raise ValueError("BREAKMYBOT_DATABASE_URL must be a PostgreSQL URL")
+        if not database_url:
+            required = ("PGHOST", "PGDATABASE", "PGUSER", "PGPASSWORD")
+            missing = [name for name in required if not os.getenv(name, "").strip()]
+            if missing:
+                raise ValueError("PostgreSQL settings are incomplete; configure BREAKMYBOT_DATABASE_URL or "
+                    f"the libpq variables: {', '.join(missing)}")
         try:
             import psycopg2
         except ImportError as exc:
             raise RuntimeError("Install BreakMyBot with the 'postgres' extra to use PostgreSQL") from exc
-        raw_connection = psycopg2.connect(database_url, connect_timeout=10)
+        if database_url:
+            raw_connection = psycopg2.connect(database_url, connect_timeout=10)
+        else:
+            raw_connection = psycopg2.connect(host=os.environ["PGHOST"],
+                port=os.getenv("PGPORT", "5432"), dbname=os.environ["PGDATABASE"],
+                user=os.environ["PGUSER"], password=os.environ["PGPASSWORD"], connect_timeout=10)
         connection = PostgresConnection(raw_connection)
         try:
             _migrate_postgres(connection)
@@ -146,7 +162,7 @@ def latest(limit: int = 50, project_id: str | None = None) -> list[RunRecord]:
 
 def append_event(run_id: str, event: dict) -> int:
     with connect() as db:
-        if os.getenv("BREAKMYBOT_DATABASE_URL", "").strip():
+        if postgres_configured():
             cursor = db.execute("INSERT INTO events(run_id,event) VALUES(?,?) RETURNING sequence", (run_id, json.dumps(event)))
             return int(cursor.fetchone()[0])
         cursor = db.execute("INSERT INTO events(run_id,event) VALUES(?,?)", (run_id, json.dumps(event)))
@@ -168,7 +184,7 @@ def enqueue(run_id: str, request: dict) -> None:
 def claim_job(lease_seconds: int = 900) -> tuple[str, dict] | None:
     now = time.time()
     with connect() as db:
-        if os.getenv("BREAKMYBOT_DATABASE_URL", "").strip():
+        if postgres_configured():
             row = db.execute("SELECT run_id,request FROM jobs WHERE status='QUEUED' ORDER BY created_at LIMIT 1 FOR UPDATE SKIP LOCKED").fetchone()
         else:
             db.execute("BEGIN IMMEDIATE")
@@ -195,13 +211,13 @@ def renew_job_lease(run_id: str, lease_seconds: int = 900) -> bool:
 
 def cancel_job(run_id: str) -> bool:
     with connect() as db:
-        if not os.getenv("BREAKMYBOT_DATABASE_URL", "").strip():
+        if not postgres_configured():
             db.execute("BEGIN IMMEDIATE")
         row = db.execute("SELECT status FROM jobs WHERE run_id=?", (run_id,)).fetchone()
         if not row or row[0] not in {"QUEUED", "RUNNING"}:
             return False
         if row[0] == "QUEUED":
-            cancelled = "TRUE" if os.getenv("BREAKMYBOT_DATABASE_URL", "").strip() else "1"
+            cancelled = "TRUE" if postgres_configured() else "1"
             db.execute(f"UPDATE jobs SET status='CANCELLED',cancel_requested={cancelled},request='{{}}' WHERE run_id=?", (run_id,))
             run_row = db.execute("SELECT payload FROM runs WHERE id=?", (run_id,)).fetchone()
             if run_row:
@@ -214,7 +230,7 @@ def cancel_job(run_id: str) -> bool:
                 db.execute("INSERT INTO events(run_id,event) VALUES(?,?)",
                            (run_id, json.dumps({"type": "run.cancelled", "phase": "CANCELLED"})))
         else:
-            cancelled = "TRUE" if os.getenv("BREAKMYBOT_DATABASE_URL", "").strip() else "1"
+            cancelled = "TRUE" if postgres_configured() else "1"
             db.execute(f"UPDATE jobs SET cancel_requested={cancelled} WHERE run_id=?", (run_id,))
         return True
 

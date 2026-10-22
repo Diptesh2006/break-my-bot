@@ -24,7 +24,11 @@ services:
       - "host.docker.internal:host-gateway"
     environment:
       BREAKMYBOT_DATA_DIR: /app/data
-      BREAKMYBOT_DATABASE_URL: ${BREAKMYBOT_DATABASE_URL:-postgresql://${POSTGRES_USER:-breakmybot}:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env (copy .env.example)}@postgres:5432/${POSTGRES_DB:-breakmybot}}
+      PGHOST: postgres
+      PGPORT: "5432"
+      PGDATABASE: ${POSTGRES_DB:-breakmybot}
+      PGUSER: ${POSTGRES_USER:-breakmybot}
+      PGPASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env (copy .env.example)}
       BREAKMYBOT_ALLOWED_HOSTS: ${BREAKMYBOT_ALLOWED_HOSTS:-host.docker.internal}
       BREAKMYBOT_DOCKER_MODE: "true"
       BREAKMYBOT_REQUEST_TIMEOUT_SECONDS: ${BREAKMYBOT_REQUEST_TIMEOUT_SECONDS:-15}
@@ -46,7 +50,11 @@ services:
     command: ["python", "-m", "breakmybot.worker"]
     environment:
       BREAKMYBOT_DATA_DIR: /app/data
-      BREAKMYBOT_DATABASE_URL: ${BREAKMYBOT_DATABASE_URL:-postgresql://${POSTGRES_USER:-breakmybot}:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env (copy .env.example)}@postgres:5432/${POSTGRES_DB:-breakmybot}}
+      PGHOST: postgres
+      PGPORT: "5432"
+      PGDATABASE: ${POSTGRES_DB:-breakmybot}
+      PGUSER: ${POSTGRES_USER:-breakmybot}
+      PGPASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env (copy .env.example)}
       BREAKMYBOT_ALLOWED_HOSTS: ${BREAKMYBOT_ALLOWED_HOSTS:-host.docker.internal}
       BREAKMYBOT_DOCKER_MODE: "true"
       BREAKMYBOT_REQUEST_TIMEOUT_SECONDS: ${BREAKMYBOT_REQUEST_TIMEOUT_SECONDS:-15}
