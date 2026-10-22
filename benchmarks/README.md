@@ -42,6 +42,8 @@ The harness refuses non-loopback HTTP endpoints, checks API and target health fi
 
 This is an exploratory demo-agent pilot, not a powered study. It isolates tool-fault strategies; the deterministic harness above separately tests stale memory. Do not infer performance on arbitrary applications or claim superiority from the default two repetitions. A candidate that fails schema/capability/allowlist validation consumes its planned attempt but does not count as a valid target scenario.
 
+The comparison harness counts an attempted finding only when the persisted scenario contains the exact ordered `fault.injected` tool/kind events requested by the arm, the target confirms injection, the session cleanup succeeds, and (for generated arms) one eligible proposal maps to that executed scenario. A completed run status alone is not treated as proof that a fault reached the target.
+
 Keep provider credentials out of command history and source control. nRouter is primary by default: configure `NROUTER_API_KEY` and `BREAKMYBOT_PLANNER_MODEL` in the API, worker, and benchmark process environments. For another compatible API, set `BREAKMYBOT_LLM_PROVIDER`, `BREAKMYBOT_LLM_BASE_URL`, `BREAKMYBOT_LLM_API_KEY_ENV` (or `BREAKMYBOT_LLM_API_KEY`), and the model setting instead. Keep the disposable instrumentation token in the API, worker, demo-agent, and benchmark environments. Restart the API and worker after setting provider configuration. With all three local services running, from the repository root run:
 
 ```powershell

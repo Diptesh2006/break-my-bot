@@ -1,3 +1,4 @@
+from benchmarks.compare_strategies import _attempt as extract_attempt
 from benchmarks.compare_strategies import _recipe_signature, _strategy_summary
 from benchmarks.compare_strategies import run_comparison
 import pytest
@@ -92,3 +93,29 @@ def test_total_token_budget_caps_each_generated_call():
     allocated = min(768, 10_000 // calls)
     assert calls == 16
     assert allocated == 625
+
+
+def test_attempt_requires_ordered_target_injection_and_cleanup_evidence():
+    faults = [{"tool": "customer_context", "kind": "timeout"},
+        {"tool": "refund_policy", "kind": "exception"}]
+    events = [{"type": "fault.injected", **fault} for fault in faults]
+    scenario = {"scenario_id": "instrumented-tool-1", "status": "VERIFIED_FAILURE",
+        "duration_ms": 10, "evidence": {"faults": faults, "fault_injected": True,
+            "injection_events": events, "cleanup_succeeded": True}}
+    run = {"id": "verified", "status": "COMPLETED", "scenarios": [scenario]}
+
+    accepted = extract_attempt(run, generated=False, expected_status="VERIFIED_FAILURE")
+    assert accepted["scenario_valid"] is True
+    assert accepted["injection_confirmed"] is True
+    assert accepted["cleanup_confirmed"] is True
+
+    scenario["evidence"]["injection_events"] = list(reversed(events))
+    rejected = extract_attempt(run, generated=False, expected_status="VERIFIED_FAILURE")
+    assert rejected["scenario_valid"] is False
+    assert rejected["injection_confirmed"] is False
+
+    scenario["evidence"]["injection_events"] = events
+    scenario["evidence"]["cleanup_succeeded"] = False
+    rejected_cleanup = extract_attempt(run, generated=False, expected_status="VERIFIED_FAILURE")
+    assert rejected_cleanup["scenario_valid"] is False
+    assert rejected_cleanup["cleanup_confirmed"] is False

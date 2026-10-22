@@ -92,13 +92,28 @@ def _attempt(run: dict, *, generated: bool, expected_status: str) -> dict:
         cost = None
     evidence = scenario.get("evidence", {}) if scenario else {}
     actual_status = scenario.get("status", "MISSING") if scenario else "MISSING"
-    valid = run.get("status") == "COMPLETED" and actual_status in {"PASSED", "VERIFIED_FAILURE"}
+    expected_faults = evidence.get("faults", [])
+    injected_events = [event for event in evidence.get("injection_events", [])
+        if event.get("type") == "fault.injected"]
+    observed_faults = [{"tool": event.get("tool"), "kind": event.get("kind")}
+        for event in injected_events]
+    normalized_expected = [{"tool": item.get("tool"), "kind": item.get("kind")}
+        for item in expected_faults if isinstance(item, dict)]
+    injection_confirmed = (bool(normalized_expected)
+        and evidence.get("fault_injected") is True
+        and observed_faults == normalized_expected)
+    cleanup_confirmed = evidence.get("cleanup_succeeded") is True
+    valid = (run.get("status") == "COMPLETED"
+        and actual_status in {"PASSED", "VERIFIED_FAILURE"}
+        and injection_confirmed and cleanup_confirmed)
     plan_valid = (not generated or bool(proposal and proposal.get("execution_eligible")
         and proposal.get("executed") and len(proposal.get("execution_scenario_ids", [])) == 1))
-    faults = evidence.get("faults", [])
+    faults = normalized_expected
     return {
         "run_id": run.get("id"), "run_status": run.get("status"),
         "scenario_status": actual_status, "scenario_valid": valid and plan_valid,
+        "injection_confirmed": injection_confirmed,
+        "cleanup_confirmed": cleanup_confirmed,
         "expected_status": expected_status,
         "outcome_match": valid and plan_valid and actual_status == expected_status,
         "faults": faults, "fault_signature": json.dumps(faults, sort_keys=True),
