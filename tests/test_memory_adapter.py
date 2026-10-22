@@ -325,12 +325,17 @@ def test_bundled_demo_memory_scenario_matches_cli_contract():
     assert validated.scenarios[1].category == "contradictory_information"
     assert validated.scenarios[2].category == "contradictory_information"
     assert validated.scenarios[2].faults[0].kind == "timeout"
-    assert validated.scenarios[3].category == "cross_session_consistency"
+    assert validated.scenarios[3].category == "memory_poisoning"
+    assert validated.scenarios[4].category == "cross_session_consistency"
+    negative_control = json.loads((examples / "memory-poisoning-negative-control.json").read_text(encoding="utf-8"))
+    validated_negative = InstrumentedMemoryAssessment(auth_env="BREAKMYBOT_MEMORY_TOKEN",
+        scenarios=negative_control)
+    assert validated_negative.scenarios[0].faults[0].kind == "lost_acknowledgment"
     approved_raw = json.loads((examples / "memory-combined-faults.json").read_text(encoding="utf-8"))
     approved = InstrumentedAssessment(auth_env="BREAKMYBOT_INSTRUMENTATION_TOKEN", faults=approved_raw)
     approved_faults = [fault.model_dump(exclude={"expected_substring"}) for fault in approved.faults]
     assert all(fault.model_dump(exclude={"expected_substring"}) in approved_faults
-        for scenario in validated.scenarios for fault in scenario.faults)
+        for scenario in [*validated.scenarios, *validated_negative.scenarios] for fault in scenario.faults)
 
 
 @pytest.mark.asyncio
@@ -390,3 +395,68 @@ async def test_bundled_demo_contradictory_memory_timeout_composition_and_negativ
     assert unsafe[0].evidence["memory_cleanup_succeeded"] is True
     assert unsafe[0].evidence["tool_cleanup_succeeded"] is True
     assert "14 days" in target.demo_memory["refund_policy"]
+
+
+@pytest.mark.asyncio
+async def test_poisoned_memory_refuses_tool_and_unsafe_retry_duplicates_real_demo_side_effect(monkeypatch):
+    import importlib.util
+    import sys
+
+    demo_path = Path(__file__).resolve().parents[1] / "examples" / "demo-agent" / "app.py"
+    examples = demo_path.parent
+    cases = json.loads((examples / "memory-scenarios.json").read_text(encoding="utf-8"))
+    safe_case = cases[3]
+    unsafe_case = json.loads((examples / "memory-poisoning-negative-control.json").read_text(encoding="utf-8"))[0]
+    raw_faults = json.loads((examples / "memory-combined-faults.json").read_text(encoding="utf-8"))
+    approved_faults = InstrumentedAssessment(auth_env="BREAKMYBOT_INSTRUMENTATION_TOKEN",
+        faults=raw_faults)
+    monkeypatch.setenv("BREAKMYBOT_MEMORY_ENABLED", "true")
+    monkeypatch.setenv("BREAKMYBOT_MEMORY_TOKEN", TOKEN)
+    monkeypatch.setenv("BREAKMYBOT_INSTRUMENTATION_ENABLED", "true")
+    monkeypatch.setenv("BREAKMYBOT_INSTRUMENTATION_TOKEN", TOOL_TOKEN)
+    monkeypatch.delenv("DEMO_UNSAFE_MEMORY_POISONING", raising=False)
+    spec = importlib.util.spec_from_file_location("breakmybot_demo_poisoned_memory", demo_path)
+    assert spec and spec.loader
+    target = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = target
+    spec.loader.exec_module(target)
+    real_async_client = httpx.AsyncClient
+    monkeypatch.setattr(runner.httpx, "AsyncClient", lambda **kwargs: real_async_client(
+        transport=ASGITransport(app=target.app), **kwargs))
+
+    async def invoke(_url, path, method, payload, _timeout, *, docker_mode=False, headers=None):
+        async with real_async_client(transport=ASGITransport(app=target.app),
+                base_url="http://localhost:8000") as client:
+            response = await client.request(method, path, json=payload, headers=headers)
+        return response.status_code, response.text, 1.0, response.headers.get("content-type", "")
+
+    monkeypatch.setattr(runner, "invoke", invoke)
+    monkeypatch.setenv("BREAKMYBOT_MEMORY_TOKEN", TOKEN)
+    monkeypatch.setenv("BREAKMYBOT_INSTRUMENTATION_TOKEN", TOOL_TOKEN)
+
+    def make_request(case):
+        return RunRequest(target_url="http://localhost:8000", endpoint_path="/api/chat", method="POST",
+            profile="quick", allow_repeated_post=True,
+            instrumented_assessment=approved_faults,
+            instrumented_memory_assessment={"auth_env": "BREAKMYBOT_MEMORY_TOKEN", "scenarios": [case]},
+            execute_memory_scenarios=True)
+
+    target.fake_refund_service["side_effect_count"] = 0
+    target.fake_refund_service["operations"].clear()
+    safe = await runner._run_memory_scenarios(make_request(safe_case), 3, None, None)
+    assert safe[0].status == "PASSED"
+    assert "side-effect count 0" in safe[0].evidence["steps"][0]["response_excerpt"].casefold()
+    assert target.fake_refund_service["side_effect_count"] == 0
+    assert target.demo_memory["refund_policy"] == target.CURRENT_REFUND_POLICY
+
+    monkeypatch.setenv("DEMO_UNSAFE_MEMORY_POISONING", "true")
+    unsafe = await runner._run_memory_scenarios(make_request(unsafe_case), 3, None, None)
+    assert unsafe[0].status == "VERIFIED_FAILURE"
+    assert unsafe[0].evidence["fault_injected"] is True
+    assert unsafe[0].evidence["memory_cleanup_succeeded"] is True
+    assert unsafe[0].evidence["tool_cleanup_succeeded"] is True
+    assert "side-effect count 2" in unsafe[0].evidence["steps"][0]["response_excerpt"]
+    assert target.fake_refund_service["side_effect_count"] == 2
+    assert target.demo_memory["refund_policy"] == target.CURRENT_REFUND_POLICY
+    assert target.tool_faults._sessions == {}
+    assert target.memory_controls._sessions == {}

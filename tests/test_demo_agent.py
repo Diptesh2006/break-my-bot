@@ -86,7 +86,8 @@ def test_demo_agent_opt_in_memory_adapter_restores_real_agent_memory(monkeypatch
     with TestClient(target.app) as client:
         manifest = client.get("/__breakmybot__/memory/capabilities").json()
         assert manifest["categories"] == [
-            "outdated_knowledge", "contradictory_information", "cross_session_consistency"
+            "outdated_knowledge", "contradictory_information", "cross_session_consistency",
+            "memory_poisoning"
         ]
         session_id = "b" * 32
         headers = {"Authorization": "Bearer demo-memory-adapter-token-0123456789"}

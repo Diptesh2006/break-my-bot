@@ -3,5 +3,11 @@
     "tool": "refund_policy",
     "kind": "timeout",
     "expected_substring": "contact support"
+  },
+  {
+    "tool": "refund_commit",
+    "kind": "lost_acknowledgment",
+    "on_call": 1,
+    "expected_substring": "side-effect count 2"
   }
 ]
