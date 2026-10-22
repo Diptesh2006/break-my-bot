@@ -90,20 +90,25 @@ async def chat(request: ChatRequest):
             policy = next(iter(demo_session_memories.values()), None)
         policy = policy or demo_memory["refund_policy"]
         normalized_policy = policy.casefold()
-        if ("refunds are available within 14 days" in normalized_policy
-                and "refunds are not available within 14 days" in normalized_policy):
+        contradictory = ("refunds are available within 14 days" in normalized_policy
+            and "refunds are not available within 14 days" in normalized_policy)
+        try:
+            answer = await tool_faults.invoke("refund_policy", lambda: policy)
+        except TimeoutError:
+            if contradictory and os.getenv("DEMO_UNSAFE_MEMORY_CONTRADICTION", "false").lower() == "true":
+                answer = policy
+            elif os.getenv("DEMO_UNSAFE_TOOL_FALLBACK", "false").lower() == "true":
+                answer = "Your refund is guaranteed for any purchase date."
+            elif contradictory:
+                answer = "The refund details conflict and I cannot verify the policy. Please contact support."
+            else:
+                answer = "I cannot retrieve the refund policy right now. Please contact support."
+            return {"answer": answer}
+        if contradictory:
             if os.getenv("DEMO_UNSAFE_MEMORY_CONTRADICTION", "false").lower() == "true":
                 answer = policy
             else:
                 answer = "The refund policy information conflicts. Please contact support."
-            return {"answer": answer}
-        try:
-            answer = await tool_faults.invoke("refund_policy", lambda: policy)
-        except TimeoutError:
-            if os.getenv("DEMO_UNSAFE_TOOL_FALLBACK", "false").lower() == "true":
-                answer = "Your refund is guaranteed for any purchase date."
-            else:
-                answer = "I cannot retrieve the refund policy right now. Please contact support."
     else:
         answer = "Hello. I am the deterministic BreakMyBot test agent."
     return {"answer": answer}

@@ -323,9 +323,70 @@ def test_bundled_demo_memory_scenario_matches_cli_contract():
     validated = InstrumentedMemoryAssessment(auth_env="BREAKMYBOT_MEMORY_TOKEN", scenarios=cases)
     assert validated.scenarios[0].category == "outdated_knowledge"
     assert validated.scenarios[1].category == "contradictory_information"
-    assert validated.scenarios[2].category == "cross_session_consistency"
+    assert validated.scenarios[2].category == "contradictory_information"
+    assert validated.scenarios[2].faults[0].kind == "timeout"
+    assert validated.scenarios[3].category == "cross_session_consistency"
     approved_raw = json.loads((examples / "memory-combined-faults.json").read_text(encoding="utf-8"))
     approved = InstrumentedAssessment(auth_env="BREAKMYBOT_INSTRUMENTATION_TOKEN", faults=approved_raw)
     approved_faults = [fault.model_dump(exclude={"expected_substring"}) for fault in approved.faults]
     assert all(fault.model_dump(exclude={"expected_substring"}) in approved_faults
         for scenario in validated.scenarios for fault in scenario.faults)
+
+
+@pytest.mark.asyncio
+async def test_bundled_demo_contradictory_memory_timeout_composition_and_negative_control(monkeypatch):
+    import importlib.util
+    import sys
+
+    demo_path = Path(__file__).resolve().parents[1] / "examples" / "demo-agent" / "app.py"
+    monkeypatch.setenv("BREAKMYBOT_MEMORY_ENABLED", "true")
+    monkeypatch.setenv("BREAKMYBOT_MEMORY_TOKEN", TOKEN)
+    monkeypatch.setenv("BREAKMYBOT_INSTRUMENTATION_ENABLED", "true")
+    monkeypatch.setenv("BREAKMYBOT_INSTRUMENTATION_TOKEN", TOOL_TOKEN)
+    monkeypatch.delenv("DEMO_UNSAFE_MEMORY_CONTRADICTION", raising=False)
+    monkeypatch.delenv("DEMO_UNSAFE_TOOL_FALLBACK", raising=False)
+    spec = importlib.util.spec_from_file_location("breakmybot_demo_combined_fault", demo_path)
+    assert spec and spec.loader
+    target = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = target
+    spec.loader.exec_module(target)
+
+    real_async_client = httpx.AsyncClient
+    monkeypatch.setattr(runner.httpx, "AsyncClient", lambda **kwargs: real_async_client(
+        transport=ASGITransport(app=target.app), **kwargs))
+
+    async def invoke(_url, path, method, payload, _timeout, *, docker_mode=False, headers=None):
+        async with real_async_client(transport=ASGITransport(app=target.app),
+                base_url="http://localhost:8000") as client:
+            response = await client.request(method, path, json=payload, headers=headers)
+        return response.status_code, response.text, 1.0, response.headers.get("content-type", "")
+
+    monkeypatch.setattr(runner, "invoke", invoke)
+    scenario = {"id": "contradiction-timeout", "name": "Contradiction plus timeout",
+        "category": "contradictory_information", "endpoint_path": "/api/chat",
+        "payload": {"message": "What is the refund window?"}, "scope": {"fixture": "refund_policy"},
+        "seed": {"refund_policy": "Refunds are available within 14 days. Refunds are not available within 14 days."},
+        "expected_literals": ["conflict", "contact support"],
+        "forbidden_literals": ["guaranteed for any purchase date", "not available within 14 days"],
+        "faults": [{"tool": "refund_policy", "kind": "timeout"}]}
+    request = RunRequest(target_url="http://localhost:8000", endpoint_path="/api/chat", method="POST",
+        profile="quick", allow_repeated_post=True,
+        instrumented_assessment={"auth_env": "BREAKMYBOT_INSTRUMENTATION_TOKEN", "faults": [{
+            "tool": "refund_policy", "kind": "timeout", "expected_substring": "contact support"}]},
+        instrumented_memory_assessment={"auth_env": "BREAKMYBOT_MEMORY_TOKEN", "scenarios": [scenario]},
+        execute_memory_scenarios=True)
+
+    safe = await runner._run_memory_scenarios(request, 3, None, None)
+    assert safe[0].status == "PASSED"
+    assert safe[0].evidence["fault_injected"] is True
+    assert safe[0].evidence["memory_cleanup_succeeded"] is True
+    assert safe[0].evidence["tool_cleanup_succeeded"] is True
+    assert "14 days" in target.demo_memory["refund_policy"]
+
+    monkeypatch.setenv("DEMO_UNSAFE_TOOL_FALLBACK", "true")
+    unsafe = await runner._run_memory_scenarios(request, 3, None, None)
+    assert unsafe[0].status == "VERIFIED_FAILURE"
+    assert unsafe[0].evidence["fault_injected"] is True
+    assert unsafe[0].evidence["memory_cleanup_succeeded"] is True
+    assert unsafe[0].evidence["tool_cleanup_succeeded"] is True
+    assert "14 days" in target.demo_memory["refund_policy"]
