@@ -78,9 +78,10 @@ def test_total_token_budget_is_checked_before_provider_or_target_calls(monkeypat
     monkeypatch.setenv("BREAKMYBOT_LLM_PROVIDER", "nrouter")
     monkeypatch.setenv("NROUTER_API_KEY", "test-key")
     monkeypatch.setenv("BREAKMYBOT_PLANNER_MODEL", "test-model")
-    with pytest.raises(ValueError, match="Total planner token budget must be at least 2048"):
-        run_comparison("http://127.0.0.1:1", "http://127.0.0.1:2", repetitions=1,
-            planner_token_budget=768, total_planner_token_budget=2047)
+    for budget in (0, 2047):
+        with pytest.raises(ValueError, match="Total planner token budget must be at least 2048"):
+            run_comparison("http://127.0.0.1:1", "http://127.0.0.1:2", repetitions=1,
+                planner_token_budget=768, total_planner_token_budget=budget)
 
 
 def test_total_token_budget_caps_each_generated_call():

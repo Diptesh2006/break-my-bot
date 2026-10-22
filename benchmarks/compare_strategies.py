@@ -184,8 +184,8 @@ def run_comparison(api_url: str, target_url: str, *, repetitions: int = 2,
                    planner_token_budget: int = PLANNER_TOKEN_BUDGET,
                    total_planner_token_budget: int | None = None) -> dict:
     generated_call_count = repetitions * len(SINGLE_FAULTS) * 2
-    total_planner_token_budget = total_planner_token_budget or (
-        generated_call_count * planner_token_budget)
+    if total_planner_token_budget is None:
+        total_planner_token_budget = generated_call_count * planner_token_budget
     if total_planner_token_budget < generated_call_count * 256:
         raise ValueError(f"Total planner token budget must be at least {generated_call_count * 256} "
             "to preserve the minimum per-call budget across all generated arms")
