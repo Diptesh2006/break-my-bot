@@ -323,6 +323,7 @@ def test_bundled_demo_memory_scenario_matches_cli_contract():
     validated = InstrumentedMemoryAssessment(auth_env="BREAKMYBOT_MEMORY_TOKEN", scenarios=cases)
     assert validated.scenarios[0].category == "outdated_knowledge"
     assert validated.scenarios[1].category == "contradictory_information"
+    assert validated.scenarios[2].category == "cross_session_consistency"
     approved_raw = json.loads((examples / "memory-combined-faults.json").read_text(encoding="utf-8"))
     approved = InstrumentedAssessment(auth_env="BREAKMYBOT_INSTRUMENTATION_TOKEN", faults=approved_raw)
     approved_faults = [fault.model_dump(exclude={"expected_substring"}) for fault in approved.faults]

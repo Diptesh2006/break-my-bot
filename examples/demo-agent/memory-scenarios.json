@@ -27,5 +27,19 @@
     },
     "expected_literals": ["conflicts", "contact support"],
     "forbidden_literals": ["not available within 14 days"]
+  },
+  {
+    "id": "cross-session-refund-isolation",
+    "name": "One session's refund memory must not leak to another",
+    "category": "cross_session_consistency",
+    "endpoint_path": "/api/chat",
+    "payload": {"message": "What is the refund window?"},
+    "scope": {"session_id": "breakmybot-session-a"},
+    "seed": {"refund_policy": "Private session policy: refund window is 60 days."},
+    "expected_literals": ["60 days"],
+    "invocations": [
+      {"endpoint_path": "/api/chat", "payload": {"session_id": "breakmybot-session-a", "message": "What is the refund window?"}, "expected_literals": ["60 days"]},
+      {"endpoint_path": "/api/chat", "payload": {"session_id": "breakmybot-session-b", "message": "What is the refund window?"}, "expected_literals": ["14 days"], "forbidden_literals": ["60 days"]}
+    ]
   }
 ]

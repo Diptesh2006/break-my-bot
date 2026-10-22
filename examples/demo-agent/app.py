@@ -14,6 +14,7 @@ tool_faults = instrument(app, token=os.getenv("BREAKMYBOT_INSTRUMENTATION_TOKEN"
 
 class ChatRequest(BaseModel):
     message: str
+    session_id: str = "default"
 
 
 class MessageItem(BaseModel):
@@ -35,28 +36,43 @@ class RefundRetryRequest(BaseModel):
 
 CURRENT_REFUND_POLICY = "Customers may request a refund within 14 days of purchase."
 demo_memory = {"refund_policy": CURRENT_REFUND_POLICY}
+demo_session_memories: dict[str, str] = {}
 fake_refund_service = {"side_effect_count": 0, "operations": {}}
 
 
-def snapshot_demo_memory(_scope):
-    return demo_memory.copy()
+def snapshot_demo_memory(scope):
+    session_id = scope.get("session_id")
+    if session_id:
+        return {"session_id": session_id, "existed": session_id in demo_session_memories,
+                "value": demo_session_memories.get(session_id)}
+    return {"refund_policy": demo_memory["refund_policy"]}
 
 
-def seed_demo_memory_state(_scope, seed):
+def seed_demo_memory_state(scope, seed):
     if set(seed) != {"refund_policy"} or not isinstance(seed["refund_policy"], str):
         raise ValueError("demo memory adapter accepts only a refund_policy string")
-    demo_memory["refund_policy"] = seed["refund_policy"]
+    session_id = scope.get("session_id")
+    if session_id:
+        demo_session_memories[session_id] = seed["refund_policy"]
+    else:
+        demo_memory["refund_policy"] = seed["refund_policy"]
 
 
 def restore_demo_memory(_scope, snapshot):
-    demo_memory.clear()
-    demo_memory.update(snapshot)
+    session_id = snapshot.get("session_id")
+    if session_id:
+        if snapshot["existed"]:
+            demo_session_memories[session_id] = snapshot["value"]
+        else:
+            demo_session_memories.pop(session_id, None)
+    else:
+        demo_memory["refund_policy"] = snapshot["refund_policy"]
 
 
 memory_controls = instrument_memory(app,
     token=os.getenv("BREAKMYBOT_MEMORY_TOKEN", ""), snapshot=snapshot_demo_memory,
     seed=seed_demo_memory_state, restore=restore_demo_memory,
-    categories=("outdated_knowledge", "contradictory_information"),
+    categories=("outdated_knowledge", "contradictory_information", "cross_session_consistency"),
     enabled=os.getenv("BREAKMYBOT_MEMORY_ENABLED", "false").lower() == "true")
 
 
@@ -69,7 +85,10 @@ def health():
 async def chat(request: ChatRequest):
     question = request.message.casefold()
     if "refund" in question:
-        policy = demo_memory["refund_policy"]
+        policy = demo_session_memories.get(request.session_id)
+        if policy is None and os.getenv("DEMO_UNSAFE_CROSS_SESSION_MEMORY", "false").lower() == "true":
+            policy = next(iter(demo_session_memories.values()), None)
+        policy = policy or demo_memory["refund_policy"]
         normalized_policy = policy.casefold()
         if ("refunds are available within 14 days" in normalized_policy
                 and "refunds are not available within 14 days" in normalized_policy):
@@ -79,7 +98,7 @@ async def chat(request: ChatRequest):
                 answer = "The refund policy information conflicts. Please contact support."
             return {"answer": answer}
         try:
-            answer = await tool_faults.invoke("refund_policy", lambda: demo_memory["refund_policy"])
+            answer = await tool_faults.invoke("refund_policy", lambda: policy)
         except TimeoutError:
             if os.getenv("DEMO_UNSAFE_TOOL_FALLBACK", "false").lower() == "true":
                 answer = "Your refund is guaranteed for any purchase date."
