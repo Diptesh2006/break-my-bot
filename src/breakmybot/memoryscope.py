@@ -27,6 +27,46 @@ def _agent_url(request: RunRequest, agent_path: str) -> str:
     return target
 
 
+def _map_results(result: dict, config: MemoryAssessment, local_secrets: tuple[str, ...]) -> list[ScenarioResult]:
+    rows = result.get("results", [])
+    if not isinstance(rows, list) or len(rows) > len(config.cases):
+        return [ScenarioResult(scenario_id="memoryscope-result-contract", name="MemoryScope result contract",
+            category="Output correctness", status="SETUP_ERROR",
+            limitation="MemoryScope returned an invalid number or shape of case results; no case outcomes were imported.")]
+
+    mapped: list[ScenarioResult] = []
+    for index, case in enumerate(config.cases):
+        if index >= len(rows):
+            state = "SKIPPED" if result.get("status") == "cancelled" else "INCONCLUSIVE"
+            mapped.append(ScenarioResult(scenario_id=f"memoryscope-{index+1}", name=case.name,
+                category="Output correctness", status=state,
+                limitation=("MemoryScope evaluation was cancelled before this case returned evidence."
+                    if state == "SKIPPED" else "MemoryScope ended before this case returned evidence.")))
+            continue
+        item = rows[index]
+        if not isinstance(item, dict):
+            mapped.append(ScenarioResult(scenario_id=f"memoryscope-{index+1}", name=case.name,
+                category="Output correctness", status="SETUP_ERROR",
+                limitation="MemoryScope returned a malformed case result."))
+            continue
+        source_status = item.get("status")
+        state = {"pass": "PASSED", "fail": "VERIFIED_FAILURE", "inconclusive": "INCONCLUSIVE",
+                 "error": "SETUP_ERROR"}.get(source_status, "INCONCLUSIVE")
+        evidence = {key: item.get(key) for key in ("answer", "checks", "judge", "answer_latency_ms") if key in item}
+        evidence = redact_evidence(evidence, local_secrets)
+        mapped.append(ScenarioResult(scenario_id=f"memoryscope-{index+1}",
+            name=item.get("name", case.name), category="Output correctness", status=state,
+            severity="medium" if state == "VERIFIED_FAILURE" else "info",
+            duration_ms=item.get("answer_latency_ms"), evidence=evidence,
+            limitation=item.get("error")))
+
+    if result.get("status") == "failed":
+        mapped.append(ScenarioResult(scenario_id="memoryscope-run-failed", name="MemoryScope evaluation status",
+            category="Output correctness", status="SETUP_ERROR",
+            limitation="MemoryScope reported the evaluation run as failed; inspect the MemoryScope service logs."))
+    return mapped
+
+
 async def evaluate(request: RunRequest, config: MemoryAssessment, cancel: asyncio.Event | None = None) -> list[ScenarioResult]:
     """Call the user's separately running MemoryScope API; its server owns nRouter credentials."""
     if not config.send_to_nrouter:
@@ -80,23 +120,9 @@ async def evaluate(request: RunRequest, config: MemoryAssessment, cancel: asynci
                 detail.raise_for_status()
                 result = detail.json()
                 if result.get("status") in {"completed", "failed", "cancelled"}:
-                    mapped: list[ScenarioResult] = []
-                    for index, item in enumerate(result.get("results", [])):
-                        source_status = item.get("status")
-                        state = {"pass": "PASSED", "fail": "VERIFIED_FAILURE", "inconclusive": "INCONCLUSIVE",
-                                 "error": "SETUP_ERROR"}.get(source_status, "INCONCLUSIVE")
-                        evidence = {key: item.get(key) for key in ("answer", "checks", "judge", "answer_latency_ms") if key in item}
-                        local_secrets = tuple(value for value in (os.getenv(config.auth_env) if config.auth_env else None,
-                            os.getenv("NROUTER_API_KEY")) if value)
-                        evidence = redact_evidence(evidence, local_secrets)
-                        mapped.append(ScenarioResult(scenario_id=f"memoryscope-{index+1}",
-                            name=item.get("name", f"Reference case {index+1}"), category="Output correctness",
-                            status=state, severity="medium" if state == "VERIFIED_FAILURE" else "info",
-                            duration_ms=item.get("answer_latency_ms"), evidence=evidence,
-                            limitation=item.get("error")))
-                    return mapped or [ScenarioResult(scenario_id="memoryscope-empty", name="Grounded answer evaluation",
-                        category="Output correctness", status="INCONCLUSIVE",
-                        limitation="MemoryScope completed without returning case evidence.")]
+                    local_secrets = tuple(value for value in (os.getenv(config.auth_env) if config.auth_env else None,
+                        os.getenv("NROUTER_API_KEY")) if value)
+                    return _map_results(result, config, local_secrets)
     except (httpx.HTTPError, ValueError, KeyError, TypeError):
         return [ScenarioResult(scenario_id="memoryscope-error", name="MemoryScope integration",
             category="Output correctness", status="SETUP_ERROR",

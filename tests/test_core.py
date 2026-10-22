@@ -10,7 +10,8 @@ from fastapi import FastAPI
 from breakmybot import runner, store
 from breakmybot.api import app as api_app
 from breakmybot.models import MemoryAssessment, MemoryCase, ProjectRecord, RunRecord, RunRequest, ScenarioResult
-from breakmybot.memoryscope import evaluate as evaluate_memory, supports_external_answer_evaluation
+from breakmybot.memoryscope import (_map_results as map_memoryscope_results,
+    evaluate as evaluate_memory, supports_external_answer_evaluation)
 from breakmybot.instrumentation import ToolFault, instrument, instrument_tool_calls
 from breakmybot.planner import mock_plan, plan
 from breakmybot.reports import generate
@@ -1106,6 +1107,26 @@ def test_memoryscope_contract_accepts_only_advertised_answer_evaluation():
         "capabilities": {"persistent_memory_lifecycle": True}})
     assert not supports_external_answer_evaluation({"contract": "unknown", "capabilities": {
         "external_agent_answer_evaluation": True}})
+
+
+def test_memoryscope_partial_failed_and_cancelled_runs_do_not_hide_missing_cases():
+    config = MemoryAssessment(agent_path="/api/chat/sse", cases=[
+        MemoryCase(name="first", question="q1", reference="r1", expected="e1"),
+        MemoryCase(name="second", question="q2", reference="r2", expected="e2"),
+    ])
+    case_result = {"name": "first", "status": "pass", "answer": "grounded"}
+
+    partial = map_memoryscope_results({"status": "failed", "results": [case_result]}, config, ())
+    assert [item.status for item in partial] == ["PASSED", "INCONCLUSIVE", "SETUP_ERROR"]
+    assert partial[1].name == "second"
+
+    cancelled = map_memoryscope_results({"status": "cancelled", "results": [case_result]}, config, ())
+    assert [item.status for item in cancelled] == ["PASSED", "SKIPPED"]
+
+    invalid = map_memoryscope_results({"status": "completed", "results": [case_result, case_result, case_result]},
+        config, ())
+    assert len(invalid) == 1
+    assert invalid[0].status == "SETUP_ERROR"
 
 
 def test_deterministic_planner_marks_unsupported_fault_injection_as_unexecutable():
