@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import sys
 from concurrent.futures import ThreadPoolExecutor
 from uuid import uuid4
 
@@ -24,10 +25,11 @@ def test_postgres_storage_migrations_events_and_concurrent_worker_claims(monkeyp
                   endpoint_path="/chat", method="GET", profile="quick")
         for index in range(3)
     ]
-    run_ids = [record.id for record in records]
+    saved_run_ids: list[str] = []
     try:
         for record in records:
             store.save(record)
+            saved_run_ids.append(record.id)
             store.enqueue(record.id, {"endpoint_path": "/chat", "method": "GET"})
 
         with store.connect() as db:
@@ -53,8 +55,14 @@ def test_postgres_storage_migrations_events_and_concurrent_worker_claims(monkeyp
         with store.connect() as db:
             assert db.execute("SELECT request FROM jobs WHERE run_id=?", (records[2].id,)).fetchone()[0] == "{}"
     finally:
-        with store.connect() as db:
-            for run_id in run_ids:
-                db.execute("DELETE FROM events WHERE run_id=?", (run_id,))
-                db.execute("DELETE FROM jobs WHERE run_id=?", (run_id,))
-                db.execute("DELETE FROM runs WHERE id=?", (run_id,))
+        if saved_run_ids:
+            test_failed = sys.exc_info()[0] is not None
+            try:
+                with store.connect() as db:
+                    for run_id in saved_run_ids:
+                        db.execute("DELETE FROM events WHERE run_id=?", (run_id,))
+                        db.execute("DELETE FROM jobs WHERE run_id=?", (run_id,))
+                        db.execute("DELETE FROM runs WHERE id=?", (run_id,))
+            except Exception:
+                if not test_failed:
+                    raise
