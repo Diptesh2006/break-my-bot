@@ -24,7 +24,7 @@ Copy-Item .env.example .env
 docker compose up -d --build
 ```
 
-The API is at `http://127.0.0.1:8000` and dashboard at `http://127.0.0.1:3000`. Configure your provider in the API and worker environments. To test an app you control:
+The API is at `http://127.0.0.1:8000` and dashboard at `http://127.0.0.1:3000`. Compose health checks wait for PostgreSQL, the API, and the dashboard to become responsive; inspect startup with `docker compose ps`. Configure your provider in the API and worker environments. To test an app you control:
 
 ```powershell
 python -m venv .venv
