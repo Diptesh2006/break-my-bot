@@ -29,6 +29,8 @@ The adapter exposes `GET /__breakmybot__/memory/capabilities`, authenticated `PU
 
 A memory case may include a `faults` array. Each fault must match an atom in the separately supplied `--instrumented-faults` allowlist. BreakMyBot arms the memory and tool controllers with the same random session ID, passes the tool session header to the actual agent request, verifies the target-reported fault event, then restores memory and disarms the tool controller. Both cleanups must succeed before a pass/failure is attributed. If the target does not confirm the configured fault chain, the combined result is `INCONCLUSIVE` rather than a memory finding.
 
+For standalone tool-fault checks, an individual allowlist row may additionally specify `endpoint_path`, `payload`, and `auth_env` when its tool is reached through a different target operation. The CLI prints those target-origin paths, payloads, and credential variable names and requests explicit consent before queuing. Keep actual credential values in environment variables. Chained faults share the selected assessment invocation and cannot set per-fault request overrides.
+
 The six supported case categories are `outdated_knowledge`, `contradictory_information`, `cross_session_consistency`, `cross_agent_memory`, `access_boundaries`, and `memory_poisoning`. Cross-session and cross-agent cases require a sequence of at least two real calls; each step can use its own path, payload, expected/forbidden literals, and credential environment-variable reference (`BREAKMYBOT_CASE_*`). This lets the operator compare sessions, agents, tenants, or roles without putting raw credentials in the case file. These are labels for explicit operator-authored experiments; declaring a category in the adapter does not prove that a scenario is meaningful. Supply expected and forbidden literals that express the invariant you want to test. Memory access-boundary cases are scored in the Security category.
 
 Example sequence for two user sessions (the target payload schema and persistence semantics are application-specific):
@@ -70,6 +72,9 @@ $env:DEMO_SUPPORT_AGENT_TOKEN = "replace-with-a-support-agent-test-token"
 # Also set these BREAKMYBOT_CASE_* values in the BreakMyBot worker environment.
 $env:BREAKMYBOT_CASE_BILLING_AGENT = $env:DEMO_BILLING_AGENT_TOKEN
 $env:BREAKMYBOT_CASE_SUPPORT_AGENT = $env:DEMO_SUPPORT_AGENT_TOKEN
+# For the standalone agent_handoff tool-fault case, also expose this variable to the worker.
+# In Docker Compose, place the same value in the ignored root .env (env_file forwards it).
+# $env:DEMO_SUPPORT_AGENT_TOKEN = "replace-with-the-same-support-agent-test-token"
 python -m uvicorn app:app --app-dir examples/demo-agent --host 127.0.0.1 --port 8001
 ```
 

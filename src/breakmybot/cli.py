@@ -13,6 +13,7 @@ from rich.prompt import Confirm, Prompt
 from rich.table import Table
 
 from . import planner
+from .redaction import redact_payload
 
 app = typer.Typer(help="Test the observable reliability of a locally running AI application.")
 console = Console()
@@ -186,12 +187,25 @@ def test(
             (chains if isinstance(case, dict) and "faults" in case else singles).append(case)
         if len(singles) > 10 or len(chains) > 5 or not (singles or chains):
             raise typer.BadParameter("instrumented-faults allows up to 10 faults and 5 chains")
-        if not Confirm.ask("Arm the target's opt-in BreakMyBot tool-fault controller for these tests?", default=False):
+        from .models import InstrumentedAssessment
+        try:
+            approved_config = InstrumentedAssessment(auth_env=instrumentation_auth_env,
+                faults=singles, chains=chains)
+        except ValidationError as exc:
+            raise typer.BadParameter("instrumented-faults must match the documented schema") from exc
+        overrides = [fault for fault in approved_config.faults
+                     if fault.endpoint_path or fault.payload is not None or fault.auth_env]
+        if overrides:
+            console.print("Operator-configured tool scenarios will also invoke:")
+            for fault in overrides:
+                console.print(f"  {method} {url.rstrip('/')}{fault.endpoint_path or endpoint}"
+                    f" · payload={json.dumps(redact_payload(fault.payload if fault.payload is not None else payload), ensure_ascii=False)}"
+                    f" · credential={fault.auth_env or auth_env or 'none'}")
+        if not Confirm.ask("Arm the target's opt-in BreakMyBot tool-fault controller for these tests? This authorizes the listed invocations and may trigger target side effects.", default=False):
             console.print("Skipping instrumented scenarios; continuing with black-box checks only.")
             instrumented_assessment = None
         else:
-            instrumented_assessment = {"auth_env": instrumentation_auth_env,
-                "faults": singles, "chains": chains}
+            instrumented_assessment = approved_config.model_dump(mode="json")
     memory_assessment = None
     if memory_cases:
         try:
@@ -248,10 +262,11 @@ def test(
                 approved_config = InstrumentedAssessment.model_validate(instrumented_assessment)
             except ValidationError as exc:
                 raise typer.BadParameter("--instrumented-faults does not match its validated schema") from exc
-            approved = [fault.model_dump(exclude={"expected_substring"}) for fault in approved_config.faults]
-            approved.extend(fault.model_dump(exclude={"expected_substring"})
+            fault_config_fields = {"expected_substring", "endpoint_path", "payload", "auth_env"}
+            approved = [fault.model_dump(exclude=fault_config_fields) for fault in approved_config.faults]
+            approved.extend(fault.model_dump(exclude=fault_config_fields)
                 for chain in approved_config.chains for fault in chain.faults)
-            if any(fault.model_dump(exclude={"expected_substring"}) not in approved
+            if any(fault.model_dump(exclude=fault_config_fields) not in approved
                    for fault in combined_faults):
                 raise typer.BadParameter("combined memory/tool cases may use only approved --instrumented-faults")
         if Confirm.ask("Seed the target's real memory for these approved scenarios and attempt restoration after each test? The target may have side effects.", default=False):

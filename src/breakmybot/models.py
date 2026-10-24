@@ -48,12 +48,38 @@ class InstrumentedToolFault(BaseModel):
     delay_seconds: float = Field(default=0, ge=0, le=30)
     every_n_calls: int = Field(default=1, ge=1, le=100)
     on_call: int | None = Field(default=None, ge=1, le=100)
+    endpoint_path: str | None = Field(default=None, min_length=1, max_length=2000)
+    payload: dict[str, Any] | None = None
+    auth_env: str | None = Field(default=None, pattern=r"^[A-Z][A-Z0-9_]{1,100}$")
+
+    @field_validator("endpoint_path")
+    @classmethod
+    def validate_endpoint_override(cls, value: str | None) -> str | None:
+        if value is not None and (not value.startswith("/") or value.startswith("//")
+                                  or any(char in value for char in "?#\\")
+                                  or any(ord(char) < 32 for char in value)):
+            raise ValueError("endpoint_path must be an absolute path on the selected target origin")
+        return value
+
+    @field_validator("payload")
+    @classmethod
+    def bound_payload_override(cls, value: dict[str, Any] | None) -> dict[str, Any] | None:
+        if value is not None and len(json.dumps(value, ensure_ascii=False).encode("utf-8")) > 32768:
+            raise ValueError("instrumented scenario payload must not exceed 32 KiB")
+        return value
 
 
 class InstrumentedFaultChain(BaseModel):
     name: str = Field(min_length=1, max_length=120)
     faults: list[InstrumentedToolFault] = Field(min_length=2, max_length=5)
     expected_substring: str | None = Field(default=None, max_length=1000)
+
+    @model_validator(mode="after")
+    def require_one_invocation(self):
+        if any(fault.endpoint_path is not None or fault.payload is not None or fault.auth_env is not None
+               for fault in self.faults):
+            raise ValueError("fault-chain steps share the assessment endpoint, payload, and credentials")
+        return self
 
 
 class InstrumentedAssessment(BaseModel):
@@ -247,11 +273,12 @@ class RunRequest(BaseModel):
         if combined_faults and self.instrumented_assessment is None:
             raise ValueError("combined memory/tool experiments require an operator-approved tool fault allowlist")
         if combined_faults:
-            approved = [fault.model_dump(exclude={"expected_substring"})
+            fault_config_fields = {"expected_substring", "endpoint_path", "payload", "auth_env"}
+            approved = [fault.model_dump(exclude=fault_config_fields)
                 for fault in self.instrumented_assessment.faults]
-            approved.extend(fault.model_dump(exclude={"expected_substring"})
+            approved.extend(fault.model_dump(exclude=fault_config_fields)
                 for chain in self.instrumented_assessment.chains for fault in chain.faults)
-            if any(fault.model_dump(exclude={"expected_substring"}) not in approved
+            if any(fault.model_dump(exclude=fault_config_fields) not in approved
                    for fault in combined_faults):
                 raise ValueError("combined memory/tool experiments may use only operator-approved faults")
         if self.execute_planned_scenarios:

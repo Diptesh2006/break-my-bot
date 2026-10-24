@@ -112,7 +112,8 @@ async def _run_instrumented_scenarios(run: RunRecord, request: RunRequest, timeo
             store.append_event(run.id, {"type": "scenario.started", "scenario_id": scenario_id,
                 "name": f"Tool fault scenario: {case_name}", "category": "Tool reliability"})
             session_id = uuid4().hex
-            fault_data = [fault.model_dump(exclude={"expected_substring"}) for fault in faults]
+            fault_data = [fault.model_dump(include={"tool", "kind", "delay_seconds", "every_n_calls", "on_call"})
+                          for fault in faults]
             armed = False
             cleanup_ok = False
             observed_events: list[dict] = []
@@ -120,13 +121,31 @@ async def _run_instrumented_scenarios(run: RunRecord, request: RunRequest, timeo
             body = ""
             duration = None
             invocation_error = None
+            invocation_fault = faults[0] if len(faults) == 1 else None
+            case_payload = (invocation_fault.payload if invocation_fault and invocation_fault.payload is not None
+                            else request.payload)
+            scenario_token = None
             try:
                 await instrumentation.arm_remote_fault(client, control_url, token, session_id, fault_data)
                 armed = True
                 request_headers = dict(headers or {})
                 request_headers["X-BreakMyBot-Session"] = session_id
-                status_code, body, duration, _ = await invoke(str(request.target_url), request.endpoint_path,
-                    request.method, request.payload, min(timeout, request.max_latency_seconds),
+                if invocation_fault and invocation_fault.auth_env:
+                    scenario_token = os.getenv(invocation_fault.auth_env)
+                    if not scenario_token:
+                        invocation_error = "MissingScenarioCredential"
+                        raise ValueError("Per-scenario target credential is not configured")
+                    for header_name in list(request_headers):
+                        if header_name.casefold() == request.auth_header.casefold():
+                            request_headers.pop(header_name)
+                    request_headers[request.auth_header] = (
+                        f"{request.auth_scheme} {scenario_token}" if request.auth_scheme else scenario_token)
+                status_code, body, duration, _ = await invoke(str(request.target_url),
+                    invocation_fault.endpoint_path if invocation_fault and invocation_fault.endpoint_path
+                        else request.endpoint_path,
+                    request.method,
+                    case_payload,
+                    min(timeout, request.max_latency_seconds),
                     docker_mode=os.getenv("BREAKMYBOT_DOCKER_MODE", "false").lower() == "true",
                     headers=request_headers)
             except (httpx.HTTPError, ValueError) as exc:
@@ -150,9 +169,15 @@ async def _run_instrumented_scenarios(run: RunRecord, request: RunRequest, timeo
                 "fault_kind": faults[0].kind if len(faults) == 1 else None,
                 "faults": expected_faults, "fault_injected": ordered_injections,
                 "injection_events": provenance, "cleanup_succeeded": cleanup_ok,
-                "http_status": status_code, "response_excerpt": redact_text(body, request.payload)[:1200],
+                "http_status": status_code,
+                "response_excerpt": redact_text(body, {"baseline": request.payload, "scenario": case_payload},
+                    tuple(secret for secret in (scenario_token,
+                        os.getenv(request.auth_env) if request.auth_env else None) if secret))[:1200],
                 "invocation_error": invocation_error}
-            if not armed or not cleanup_ok:
+            if invocation_error == "MissingScenarioCredential":
+                state = "SETUP_ERROR"
+                limitation = "The configured per-scenario target credential is missing."
+            elif not armed or not cleanup_ok:
                 state = "SETUP_ERROR"
                 limitation = "Fault session could not be safely armed, observed, and cleaned up."
             elif not ordered_injections:
@@ -370,7 +395,8 @@ async def _run_memory_scenarios(request: RunRequest, timeout: float,
                             if os.getenv("BREAKMYBOT_DOCKER_MODE", "false").lower() == "true"
                             else tool_control_url)
                         await instrumentation.arm_remote_fault(client, resolved_tool_url,
-                            tool_token, session_id, [fault.model_dump(exclude={"expected_substring"})
+                            tool_token, session_id, [fault.model_dump(include={"tool", "kind", "delay_seconds",
+                                "every_n_calls", "on_call"})
                                 for fault in scenario.faults])
                     arm_attempted = True
                     memory_cleanup_ok = False

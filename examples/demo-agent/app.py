@@ -178,6 +178,23 @@ async def chat(request: ChatRequest):
     return {"answer": answer}
 
 
+@app.post("/api/chat/retry")
+async def chat_with_tool_retry(request: ChatRequest):
+    """Exercise a deterministic second tool-call timeout followed by one retry."""
+    if "refund" not in request.message.casefold():
+        return {"answer": "Hello. I am the deterministic BreakMyBot test agent."}
+    policy = demo_session_memories.get(request.session_id) or demo_memory["refund_policy"]
+    try:
+        await tool_faults.invoke("refund_policy", lambda: policy)
+        try:
+            answer = await tool_faults.invoke("refund_policy", lambda: policy)
+        except TimeoutError:
+            answer = await tool_faults.invoke("refund_policy", lambda: policy)
+    except TimeoutError:
+        answer = "I cannot retrieve the refund policy right now. Please contact support."
+    return {"answer": answer}
+
+
 @app.post("/api/chat/chain")
 async def chat_chain():
     answers = []

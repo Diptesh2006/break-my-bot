@@ -534,6 +534,79 @@ async def test_lost_acknowledgment_retry_verifies_actual_duplicate_and_idempoten
 
 
 @pytest.mark.asyncio
+async def test_instrumented_fault_case_uses_explicit_endpoint_payload_and_auth(tmp_path, monkeypatch):
+    from fastapi import Header
+
+    token = "scenario-override-control-token-123456789"
+    target_token = "scenario-override-target-token-123456789"
+    target = FastAPI()
+    controller = instrument(target, token=token, enabled=True)
+    observed = {}
+
+    @target.post("/custom-action")
+    async def custom_action(payload: dict, authorization: str | None = Header(default=None)):
+        observed.update(payload=payload, authorization=authorization)
+        try:
+            answer = await controller.invoke("custom_tool", lambda: "action accepted")
+        except TimeoutError:
+            answer = "Please contact support."
+        return {"answer": answer, "echo": f"{payload['api_key']} {authorization}"}
+
+    original_client = httpx.AsyncClient
+
+    def target_client(*args, **kwargs):
+        return original_client(*args, **kwargs, transport=ASGITransport(app=target))
+
+    async def invoke_target(url, path, method, payload, _timeout, *, docker_mode=False, headers=None):
+        async with original_client(transport=ASGITransport(app=target), base_url=url) as client:
+            response = await client.request(method, path, json=payload, headers=headers)
+        return response.status_code, response.text, 1.0, response.headers.get("content-type", "")
+
+    monkeypatch.setattr("breakmybot.instrumentation.httpx.AsyncClient", target_client)
+    monkeypatch.setattr(runner, "invoke", invoke_target)
+    monkeypatch.setattr(runner, "_phase", lambda *_args, **_kwargs: None)
+    monkeypatch.setenv("BREAKMYBOT_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("BREAKMYBOT_DOCKER_MODE", "false")
+    monkeypatch.setenv("BREAKMYBOT_INSTRUMENTATION_TOKEN", token)
+    monkeypatch.setenv("DEMO_CASE_TOKEN", target_token)
+    request = RunRequest(target_url="http://127.0.0.1:8001", endpoint_path="/baseline", method="POST",
+        payload={"message": "baseline"}, allow_repeated_post=True,
+        instrumented_assessment={"auth_env": "BREAKMYBOT_INSTRUMENTATION_TOKEN", "faults": [{
+            "tool": "custom_tool", "kind": "timeout", "expected_substring": "contact support",
+            "endpoint_path": "/custom-action", "payload": {"case_id": "CASE-42",
+                "api_key": "case-payload-secret"},
+            "auth_env": "DEMO_CASE_TOKEN"}]})
+    run = RunRecord(target_url=str(request.target_url), endpoint_path=request.endpoint_path,
+        method=request.method, profile=request.profile)
+    store.save(run)
+
+    result = await runner._run_instrumented_scenarios(run, request, 10, {"Authorization": "Bearer old"}, None)
+
+    assert result[0].status == "PASSED"
+    assert result[0].evidence["fault_injected"] is True
+    assert result[0].evidence["cleanup_succeeded"] is True
+    assert observed == {"payload": {"case_id": "CASE-42", "api_key": "case-payload-secret"},
+        "authorization": f"Bearer {target_token}"}
+    assert target_token not in result[0].model_dump_json()
+    assert "case-payload-secret" not in result[0].model_dump_json()
+    assert controller._sessions == {}
+
+
+def test_instrumented_fault_override_rejects_cross_origin_paths_and_chains():
+    from pydantic import ValidationError
+    from breakmybot.models import InstrumentedFaultChain
+
+    with pytest.raises(ValidationError, match="selected target origin"):
+        RunRequest(target_url="http://127.0.0.1:8001", endpoint_path="/chat", method="POST",
+            instrumented_assessment={"auth_env": "BREAKMYBOT_INSTRUMENTATION_TOKEN", "faults": [{
+                "tool": "lookup", "kind": "timeout", "endpoint_path": "//attacker.example/path"}]})
+    with pytest.raises(ValidationError, match="share the assessment endpoint"):
+        InstrumentedFaultChain(name="invalid-chain", faults=[
+            {"tool": "first", "kind": "timeout", "endpoint_path": "/other"},
+            {"tool": "second", "kind": "timeout"}])
+
+
+@pytest.mark.asyncio
 async def test_instrumented_control_token_requires_https_for_non_loopback_target(monkeypatch):
     monkeypatch.setenv("BREAKMYBOT_INSTRUMENTATION_TOKEN", "x" * 40)
     request = RunRequest(target_url="http://192.0.2.10:8443", endpoint_path="/chat", method="GET",

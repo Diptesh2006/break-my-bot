@@ -337,8 +337,9 @@ def test_bundled_demo_memory_scenario_matches_cli_contract():
     assert validated_negative.scenarios[0].faults[0].kind == "lost_acknowledgment"
     approved_raw = json.loads((examples / "memory-combined-faults.json").read_text(encoding="utf-8"))
     approved = InstrumentedAssessment(auth_env="BREAKMYBOT_INSTRUMENTATION_TOKEN", faults=approved_raw)
-    approved_faults = [fault.model_dump(exclude={"expected_substring"}) for fault in approved.faults]
-    assert all(fault.model_dump(exclude={"expected_substring"}) in approved_faults
+    fault_config_fields = {"expected_substring", "endpoint_path", "payload", "auth_env"}
+    approved_faults = [fault.model_dump(exclude=fault_config_fields) for fault in approved.faults]
+    assert all(fault.model_dump(exclude=fault_config_fields) in approved_faults
         for scenario in [*validated.scenarios, *validated_negative.scenarios] for fault in scenario.faults)
 
 
@@ -422,6 +423,8 @@ async def test_queued_full_demo_memory_suite_persists_consistent_score_and_repor
     examples = Path(__file__).resolve().parents[1] / "examples" / "demo-agent"
     memory_cases = json.loads((examples / "memory-scenarios.json").read_text(encoding="utf-8"))
     fault_allowlist = json.loads((examples / "memory-combined-faults.json").read_text(encoding="utf-8"))
+    # Keep the duplicate-action negative-control fixture out of this safe memory-only acceptance.
+    fault_allowlist = [fault for fault in fault_allowlist if fault["tool"] != "refund_commit"]
     env = {
         "BREAKMYBOT_DATA_DIR": str(tmp_path), "BREAKMYBOT_DOCKER_MODE": "false",
         "BREAKMYBOT_MEMORY_ENABLED": "true", "BREAKMYBOT_MEMORY_TOKEN": TOKEN,

@@ -335,15 +335,16 @@ async def plan(request: RunRequest, baseline_profile: dict | None = None) -> dic
     approved_fault_chains = []
     allowed_invariants = set()
     if instrumented:
-        approved_individual_scenarios.extend({"fault": item.model_dump(exclude={"expected_substring"}),
+        planner_fault_fields = {"expected_substring", "endpoint_path", "payload", "auth_env"}
+        approved_individual_scenarios.extend({"fault": item.model_dump(exclude=planner_fault_fields),
             "expected_substring": item.expected_substring} for item in instrumented.faults)
         for item in instrumented.faults:
-            approved_fault_atoms[json.dumps(item.model_dump(exclude={"expected_substring"}), sort_keys=True)] = \
-                item.model_dump(exclude={"expected_substring"})
+            approved_fault_atoms[json.dumps(item.model_dump(exclude=planner_fault_fields), sort_keys=True)] = \
+                item.model_dump(exclude=planner_fault_fields)
             if item.expected_substring:
                 allowed_invariants.add(item.expected_substring)
         for chain in instrumented.chains:
-            fault_rows = [item.model_dump(exclude={"expected_substring"}) for item in chain.faults]
+            fault_rows = [item.model_dump(exclude=planner_fault_fields) for item in chain.faults]
             approved_fault_chains.append({"faults": fault_rows, "expected_substring": chain.expected_substring})
             for item, row in zip(chain.faults, fault_rows):
                 approved_fault_atoms[json.dumps(row, sort_keys=True)] = row
