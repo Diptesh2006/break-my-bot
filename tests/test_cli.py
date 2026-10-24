@@ -3,6 +3,30 @@ from typer.testing import CliRunner
 from breakmybot import cli
 
 
+def test_doctor_reports_configured_backends_without_claiming_worker_liveness(monkeypatch):
+    calls = []
+
+    def fake_api_request(method, path, **kwargs):
+        calls.append((method, path, kwargs))
+        if path == "/api/health":
+            return {"status": "ok", "storage": "postgresql", "execution": "postgresql-worker-queue"}
+        if path == "/api/planner/status":
+            return {"provider": "nRouter", "configured": True, "judge_configured": False,
+                "model": "private-model-name"}
+        raise AssertionError(f"Unexpected API request: {method} {path}")
+
+    monkeypatch.setattr(cli, "api_request", fake_api_request)
+    result = CliRunner().invoke(cli.app, ["doctor"])
+
+    assert result.exit_code == 0, result.output
+    assert "Configured storage: postgresql" in result.output
+    assert "worker process not" in result.output and "probed)" in result.output
+    assert "Planner provider: nRouter" in result.output and "configured: True" in result.output
+    assert "Semantic judge configured: False" in result.output
+    assert "private-model-name" not in result.output
+    assert [path for _method, path, _kwargs in calls] == ["/api/health", "/api/planner/status"]
+
+
 def test_cli_queues_assessment_without_sending_a_duplicate_preflight(monkeypatch):
     calls = []
 

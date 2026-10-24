@@ -48,9 +48,14 @@ def init():
 
 @app.command()
 def doctor():
-    """Check API connectivity."""
+    """Check API connectivity and report configured local backends/providers."""
     result = api_request("GET", "/api/health")
+    provider = api_request("GET", "/api/planner/status")
     console.print(f"[green]OK[/green] BreakMyBot API reachable ({result['status']}) at {API}")
+    console.print(f"Configured storage: {result.get('storage', 'unknown')}")
+    console.print(f"Configured execution backend: {result.get('execution', 'unknown')} (worker process not probed)")
+    console.print(f"Planner provider: {provider.get('provider', 'unknown')} · configured: {provider.get('configured', False)}")
+    console.print(f"Semantic judge configured: {provider.get('judge_configured', False)}")
 
 
 @app.command()

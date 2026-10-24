@@ -33,6 +33,8 @@ python -m pip install -e .
 breakmybot test --url http://localhost:8000
 ```
 
+Use `breakmybot doctor` to check API reachability, configured storage/queue backends, and model-provider configuration. It does not claim the background worker process is alive.
+
 Or target a chat endpoint:
 
 ```powershell
