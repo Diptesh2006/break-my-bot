@@ -7,7 +7,7 @@ from pathlib import Path
 import httpx
 import pytest
 from fastapi import FastAPI
-from httpx import ASGITransport
+from httpx import ASGITransport, AsyncClient
 
 from breakmybot import runner, store
 from breakmybot.instrumentation import instrument
@@ -405,6 +405,107 @@ async def test_restricted_memory_does_not_cross_authenticated_agent_handoff_afte
     assert unsafe[0].evidence["steps"][1]["assertions"]["forbidden_literal_1"] is False
     assert "ALPHA-7" not in unsafe[0].evidence["steps"][1]["response_excerpt"]
     assert target.demo_agent_memories == {}
+    assert target.memory_controls._sessions == {}
+    assert target.tool_faults._sessions == {}
+
+
+@pytest.mark.asyncio
+async def test_queued_full_demo_memory_suite_persists_consistent_score_and_reports(tmp_path, monkeypatch):
+    import io
+    import importlib.util
+    import sys
+    from jsonschema import Draft202012Validator, FormatChecker
+    from pypdf import PdfReader
+    from breakmybot import worker
+    from breakmybot.api import app as product_api
+
+    examples = Path(__file__).resolve().parents[1] / "examples" / "demo-agent"
+    memory_cases = json.loads((examples / "memory-scenarios.json").read_text(encoding="utf-8"))
+    fault_allowlist = json.loads((examples / "memory-combined-faults.json").read_text(encoding="utf-8"))
+    env = {
+        "BREAKMYBOT_DATA_DIR": str(tmp_path), "BREAKMYBOT_DOCKER_MODE": "false",
+        "BREAKMYBOT_MEMORY_ENABLED": "true", "BREAKMYBOT_MEMORY_TOKEN": TOKEN,
+        "BREAKMYBOT_INSTRUMENTATION_ENABLED": "true", "BREAKMYBOT_INSTRUMENTATION_TOKEN": TOOL_TOKEN,
+        "DEMO_RETRY_CROSS_SESSION": "true",
+        "BREAKMYBOT_CASE_BILLING_AGENT": "billing-agent-test-token-0123456789",
+        "BREAKMYBOT_CASE_SUPPORT_AGENT": "support-agent-test-token-0123456789",
+        "DEMO_BILLING_AGENT_TOKEN": "billing-agent-test-token-0123456789",
+        "DEMO_SUPPORT_AGENT_TOKEN": "support-agent-test-token-0123456789",
+    }
+    for key, value in env.items():
+        monkeypatch.setenv(key, value)
+    for key in ("BREAKMYBOT_DATABASE_URL", "PGHOST", "PGDATABASE", "PGUSER", "PGPASSWORD"):
+        monkeypatch.delenv(key, raising=False)
+    monkeypatch.delenv("DEMO_UNSAFE_TOOL_FALLBACK", raising=False)
+    monkeypatch.delenv("DEMO_UNSAFE_MEMORY_CONTRADICTION", raising=False)
+    monkeypatch.delenv("DEMO_UNSAFE_MEMORY_POISONING", raising=False)
+    monkeypatch.delenv("DEMO_UNSAFE_CROSS_SESSION_MEMORY", raising=False)
+    monkeypatch.delenv("DEMO_UNSAFE_RESTRICTED_HANDOFF", raising=False)
+    spec = importlib.util.spec_from_file_location("breakmybot_demo_full_memory_queue", examples / "app.py")
+    assert spec and spec.loader
+    target = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = target
+    spec.loader.exec_module(target)
+
+    real_async_client = httpx.AsyncClient
+    monkeypatch.setattr(runner.httpx, "AsyncClient", lambda **kwargs: real_async_client(
+        transport=ASGITransport(app=target.app), **kwargs))
+
+    async def invoke(_url, path, method, payload, _timeout, *, docker_mode=False, headers=None):
+        async with real_async_client(transport=ASGITransport(app=target.app),
+                base_url="http://127.0.0.1:8001") as client:
+            response = await client.request(method, path, json=payload, headers=headers)
+        return response.status_code, response.text, 1.0, response.headers.get("content-type", "")
+
+    monkeypatch.setattr(runner, "invoke", invoke)
+    request = {
+        "target_url": "http://127.0.0.1:8001", "endpoint_path": "/api/chat", "method": "POST",
+        "payload": {"message": "What is the refund window?"}, "profile": "quick",
+        "expected_substring": "14 days", "allow_repeated_post": True,
+        "instrumented_assessment": {"auth_env": "BREAKMYBOT_INSTRUMENTATION_TOKEN",
+            "faults": fault_allowlist, "chains": []},
+        "instrumented_memory_assessment": {"auth_env": "BREAKMYBOT_MEMORY_TOKEN",
+            "scenarios": memory_cases}, "execute_memory_scenarios": True,
+    }
+    async with AsyncClient(transport=ASGITransport(app=product_api), base_url="http://breakmybot") as client:
+        accepted = await client.post("/api/runs", json=request)
+        assert accepted.status_code == 202, accepted.text
+        run_id = accepted.json()["run_id"]
+        assert await worker.process_one_job() is True
+        fetched = await client.get(f"/api/runs/{run_id}")
+        assert fetched.status_code == 200
+        run = fetched.json()
+        assert run["status"] == "COMPLETED"
+        memory_results = [item for item in run["scenarios"] if item["scenario_id"].startswith("memory-")
+            and item["evidence"].get("memory_category")]
+        assert len(memory_results) == len(memory_cases)
+        assert all(item["status"] == "PASSED" for item in memory_results)
+        assert all(item["evidence"]["cleanup_succeeded"] for item in memory_results)
+        assert all(item["evidence"]["tool_cleanup_succeeded"] for item in memory_results if item["evidence"].get("faults"))
+        assert run["scoring"]["observed_memory_categories"] == [
+            "access_boundaries", "contradictory_information", "cross_session_consistency",
+            "memory_poisoning", "outdated_knowledge"]
+        score_response = await client.get(f"/api/runs/{run_id}/score")
+        assert score_response.json()["observed_memory_categories"] == run["scoring"]["observed_memory_categories"]
+        report_response = await client.get(f"/api/runs/{run_id}/report.json")
+        report = report_response.json()
+        schema = json.loads((Path(__file__).resolve().parents[1] / "docs/report-schema.json").read_text())
+        Draft202012Validator(schema, format_checker=FormatChecker()).validate(report)
+        assert report["scoring"] == run["scoring"]
+        html = (await client.get(f"/api/runs/{run_id}/report.html")).text
+        assert "Confirmed target memory categories: access_boundaries, contradictory_information, cross_session_consistency, memory_poisoning, outdated_knowledge" in html
+        pdf_response = await client.get(f"/api/runs/{run_id}/report.pdf")
+        assert pdf_response.content.startswith(b"%PDF")
+        pdf_text = " ".join(page.extract_text() or ""
+            for page in PdfReader(io.BytesIO(pdf_response.content)).pages)
+        assert "Confirmed target memory categories" in pdf_text
+        assert "ALPHA-7" not in html and "ALPHA-7" not in str(report)
+        with store.connect() as queue:
+            assert queue.execute("SELECT status,request FROM jobs WHERE run_id=?", (run_id,)).fetchone() == ("DONE", "{}")
+    assert target.demo_memory["refund_policy"] == target.CURRENT_REFUND_POLICY
+    assert target.demo_session_memories == {}
+    assert target.demo_agent_memories == {}
+    assert target.fake_refund_service["side_effect_count"] == 0
     assert target.memory_controls._sessions == {}
     assert target.tool_faults._sessions == {}
 

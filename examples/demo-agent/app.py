@@ -153,7 +153,8 @@ async def chat(request: ChatRequest):
         try:
             answer = await tool_faults.invoke("refund_policy", lambda: policy)
         except TimeoutError:
-            if os.getenv("DEMO_RETRY_CROSS_SESSION", "false").lower() == "true":
+            if (request.session_id != "default"
+                    and os.getenv("DEMO_RETRY_CROSS_SESSION", "false").lower() == "true"):
                 try:
                     answer = await tool_faults.invoke("refund_policy", lambda: policy)
                 except TimeoutError:
