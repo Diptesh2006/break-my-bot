@@ -105,7 +105,12 @@ async def chat(request: ChatRequest):
         try:
             answer = await tool_faults.invoke("refund_policy", lambda: policy)
         except TimeoutError:
-            if contradictory and os.getenv("DEMO_UNSAFE_MEMORY_CONTRADICTION", "false").lower() == "true":
+            if os.getenv("DEMO_RETRY_CROSS_SESSION", "false").lower() == "true":
+                try:
+                    answer = await tool_faults.invoke("refund_policy", lambda: policy)
+                except TimeoutError:
+                    answer = "I cannot retrieve the refund policy right now. Please contact support."
+            elif contradictory and os.getenv("DEMO_UNSAFE_MEMORY_CONTRADICTION", "false").lower() == "true":
                 answer = policy
             elif os.getenv("DEMO_UNSAFE_TOOL_FALLBACK", "false").lower() == "true":
                 answer = "Your refund is guaranteed for any purchase date."

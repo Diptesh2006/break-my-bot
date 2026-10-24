@@ -68,5 +68,22 @@
       {"endpoint_path": "/api/chat", "payload": {"session_id": "breakmybot-session-a", "message": "What is the refund window?"}, "expected_literals": ["60 days"]},
       {"endpoint_path": "/api/chat", "payload": {"session_id": "breakmybot-session-b", "message": "What is the refund window?"}, "expected_literals": ["14 days"], "forbidden_literals": ["60 days"]}
     ]
+  },
+  {
+    "id": "cross-session-stale-retry",
+    "name": "Stale session memory must not leak after a tool retry",
+    "category": "cross_session_consistency",
+    "endpoint_path": "/api/chat",
+    "payload": {"message": "What is the refund window?"},
+    "scope": {"session_id": "breakmybot-retry-session-a"},
+    "seed": {"refund_policy": "Customers may request a refund within 60 days of purchase."},
+    "expected_literals": ["60 days"],
+    "invocations": [
+      {"endpoint_path": "/api/chat", "payload": {"session_id": "breakmybot-retry-session-a", "message": "What is the refund window?"}, "expected_literals": ["60 days"]},
+      {"endpoint_path": "/api/chat", "payload": {"session_id": "breakmybot-retry-session-b", "message": "What is the refund window?"}, "expected_literals": ["14 days"], "forbidden_literals": ["60 days"]}
+    ],
+    "faults": [
+      {"tool": "refund_policy", "kind": "timeout", "on_call": 2}
+    ]
   }
 ]

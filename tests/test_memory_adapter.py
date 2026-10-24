@@ -327,6 +327,8 @@ def test_bundled_demo_memory_scenario_matches_cli_contract():
     assert validated.scenarios[2].faults[0].kind == "timeout"
     assert validated.scenarios[3].category == "memory_poisoning"
     assert validated.scenarios[4].category == "cross_session_consistency"
+    assert validated.scenarios[5].category == "cross_session_consistency"
+    assert validated.scenarios[5].faults[0].on_call == 2
     negative_control = json.loads((examples / "memory-poisoning-negative-control.json").read_text(encoding="utf-8"))
     validated_negative = InstrumentedMemoryAssessment(auth_env="BREAKMYBOT_MEMORY_TOKEN",
         scenarios=negative_control)
@@ -336,6 +338,67 @@ def test_bundled_demo_memory_scenario_matches_cli_contract():
     approved_faults = [fault.model_dump(exclude={"expected_substring"}) for fault in approved.faults]
     assert all(fault.model_dump(exclude={"expected_substring"}) in approved_faults
         for scenario in [*validated.scenarios, *validated_negative.scenarios] for fault in scenario.faults)
+
+
+@pytest.mark.asyncio
+async def test_cross_session_stale_memory_retry_is_safe_and_negative_control_proves_leak(monkeypatch):
+    import importlib.util
+    import sys
+
+    demo_path = Path(__file__).resolve().parents[1] / "examples" / "demo-agent" / "app.py"
+    examples = demo_path.parent
+    cases = json.loads((examples / "memory-scenarios.json").read_text(encoding="utf-8"))
+    scenario = cases[5]
+    raw_faults = json.loads((examples / "memory-combined-faults.json").read_text(encoding="utf-8"))
+    approved_faults = InstrumentedAssessment(auth_env="BREAKMYBOT_INSTRUMENTATION_TOKEN", faults=raw_faults)
+    monkeypatch.setenv("BREAKMYBOT_MEMORY_ENABLED", "true")
+    monkeypatch.setenv("BREAKMYBOT_MEMORY_TOKEN", TOKEN)
+    monkeypatch.setenv("BREAKMYBOT_INSTRUMENTATION_ENABLED", "true")
+    monkeypatch.setenv("BREAKMYBOT_INSTRUMENTATION_TOKEN", TOOL_TOKEN)
+    monkeypatch.setenv("DEMO_RETRY_CROSS_SESSION", "true")
+    monkeypatch.delenv("DEMO_UNSAFE_CROSS_SESSION_MEMORY", raising=False)
+    spec = importlib.util.spec_from_file_location("breakmybot_demo_cross_session_retry", demo_path)
+    assert spec and spec.loader
+    target = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = target
+    spec.loader.exec_module(target)
+    real_async_client = httpx.AsyncClient
+    monkeypatch.setattr(runner.httpx, "AsyncClient", lambda **kwargs: real_async_client(
+        transport=ASGITransport(app=target.app), **kwargs))
+
+    async def invoke(_url, path, method, payload, _timeout, *, docker_mode=False, headers=None):
+        async with real_async_client(transport=ASGITransport(app=target.app),
+                base_url="http://localhost:8000") as client:
+            response = await client.request(method, path, json=payload, headers=headers)
+        return response.status_code, response.text, 1.0, response.headers.get("content-type", "")
+
+    monkeypatch.setattr(runner, "invoke", invoke)
+    request = RunRequest(target_url="http://localhost:8000", endpoint_path="/api/chat", method="POST",
+        profile="quick", allow_repeated_post=True, instrumented_assessment=approved_faults,
+        instrumented_memory_assessment={"auth_env": "BREAKMYBOT_MEMORY_TOKEN", "scenarios": [scenario]},
+        execute_memory_scenarios=True)
+
+    safe = await runner._run_memory_scenarios(request, 3, None, None)
+    assert safe[0].status == "PASSED"
+    assert safe[0].evidence["fault_injected"] is True
+    assert safe[0].evidence["memory_cleanup_succeeded"] is True
+    assert safe[0].evidence["tool_cleanup_succeeded"] is True
+    assert "14 days" in safe[0].evidence["steps"][1]["response_excerpt"]
+    assert "60 days" not in safe[0].evidence["steps"][1]["response_excerpt"]
+    assert target.demo_session_memories == {}
+
+    monkeypatch.setenv("DEMO_UNSAFE_CROSS_SESSION_MEMORY", "true")
+    unsafe = await runner._run_memory_scenarios(request, 3, None, None)
+    assert unsafe[0].status == "VERIFIED_FAILURE"
+    assert unsafe[0].evidence["fault_injected"] is True
+    assert unsafe[0].evidence["memory_cleanup_succeeded"] is True
+    assert unsafe[0].evidence["tool_cleanup_succeeded"] is True
+    assert unsafe[0].evidence["steps"][1]["assertions"]["expected_literal_1"] is False
+    assert unsafe[0].evidence["steps"][1]["assertions"]["forbidden_literal_1"] is False
+    assert "60 days" not in unsafe[0].evidence["steps"][1]["response_excerpt"]
+    assert target.demo_session_memories == {}
+    assert target.tool_faults._sessions == {}
+    assert target.memory_controls._sessions == {}
 
 
 @pytest.mark.asyncio
