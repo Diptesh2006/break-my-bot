@@ -51,7 +51,7 @@ Example sequence for two user sessions (the target payload schema and persistenc
 
 ## Run against the bundled demo
 
-Current fixture update: the demo advertises `memory_poisoning` and tests a poisoned refund instruction. The safe run refuses with zero side effects; the opt-in unsafe control invokes the isolated fake refund service, injects a lost acknowledgment, and checks the actual side-effect count. The demo also composes a cross-session stale-memory check with an injected timeout and retry. Cross-agent and tenant-isolation checks remain unsupported.
+Current fixture update: the demo tests poisoned memory, access boundaries, and cross-session memory. The safe poisoned-memory run refuses with zero side effects; its opt-in unsafe control invokes the isolated fake refund service, injects a lost acknowledgment, and checks the actual side-effect count. The restricted-memory handoff fixture uses separate bearer-authenticated billing and support agents and composes a handoff timeout with an access-boundary invariant. The demo also composes a cross-session stale-memory check with an injected timeout and retry. General cross-agent persistence and tenant-isolation checks remain unsupported.
 
 Run the unsafe poisoned-memory/lost-acknowledgment negative control separately from the safe fixture suite so its intentionally duplicated fake side effect cannot contaminate another scenario. Start a fresh demo process with `DEMO_UNSAFE_MEMORY_POISONING=true`, then pass `--memory-scenarios examples/demo-agent/memory-poisoning-negative-control.json` alongside the approved `memory-combined-faults.json` tool allowlist. The fixture is local and resettable; never point it at a real refund/payment service.
 
@@ -65,6 +65,11 @@ $env:BREAKMYBOT_MEMORY_TOKEN = "replace-with-a-random-32-character-token"
 $env:BREAKMYBOT_INSTRUMENTATION_ENABLED = "true"
 $env:BREAKMYBOT_INSTRUMENTATION_TOKEN = "replace-with-another-random-32-character-token"
 $env:DEMO_RETRY_CROSS_SESSION = "true"
+$env:DEMO_BILLING_AGENT_TOKEN = "replace-with-a-billing-agent-test-token"
+$env:DEMO_SUPPORT_AGENT_TOKEN = "replace-with-a-support-agent-test-token"
+# Also set these BREAKMYBOT_CASE_* values in the BreakMyBot worker environment.
+$env:BREAKMYBOT_CASE_BILLING_AGENT = $env:DEMO_BILLING_AGENT_TOKEN
+$env:BREAKMYBOT_CASE_SUPPORT_AGENT = $env:DEMO_SUPPORT_AGENT_TOKEN
 python -m uvicorn app:app --app-dir examples/demo-agent --host 127.0.0.1 --port 8001
 ```
 

@@ -1,7 +1,8 @@
 import json
+import hmac
 import os
 
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, HTTPException, Request
 from pydantic import BaseModel
 from fastapi.responses import StreamingResponse
 from breakmybot.instrumentation import instrument
@@ -34,13 +35,22 @@ class RefundRetryRequest(BaseModel):
     idempotency_key: str | None = None
 
 
+class AgentRequest(BaseModel):
+    session_id: str
+
+
 CURRENT_REFUND_POLICY = "Customers may request a refund within 14 days of purchase."
 demo_memory = {"refund_policy": CURRENT_REFUND_POLICY}
 demo_session_memories: dict[str, str] = {}
+demo_agent_memories: dict[tuple[str, str], str] = {}
 fake_refund_service = {"side_effect_count": 0, "operations": {}}
 
 
 def snapshot_demo_memory(scope):
+    if scope.get("agent"):
+        key = (scope.get("session_id", ""), scope["agent"])
+        return {"kind": "agent", "key": key, "existed": key in demo_agent_memories,
+                "value": demo_agent_memories.get(key)}
     session_id = scope.get("session_id")
     if session_id:
         return {"session_id": session_id, "existed": session_id in demo_session_memories,
@@ -51,6 +61,9 @@ def snapshot_demo_memory(scope):
 def seed_demo_memory_state(scope, seed):
     if set(seed) != {"refund_policy"} or not isinstance(seed["refund_policy"], str):
         raise ValueError("demo memory adapter accepts only a refund_policy string")
+    if scope.get("agent"):
+        demo_agent_memories[(scope.get("session_id", ""), scope["agent"])] = seed["refund_policy"]
+        return
     session_id = scope.get("session_id")
     if session_id:
         demo_session_memories[session_id] = seed["refund_policy"]
@@ -59,6 +72,13 @@ def seed_demo_memory_state(scope, seed):
 
 
 def restore_demo_memory(_scope, snapshot):
+    if snapshot.get("kind") == "agent":
+        key = tuple(snapshot["key"])
+        if snapshot["existed"]:
+            demo_agent_memories[key] = snapshot["value"]
+        else:
+            demo_agent_memories.pop(key, None)
+        return
     session_id = snapshot.get("session_id")
     if session_id:
         if snapshot["existed"]:
@@ -73,13 +93,41 @@ memory_controls = instrument_memory(app,
     token=os.getenv("BREAKMYBOT_MEMORY_TOKEN", ""), snapshot=snapshot_demo_memory,
     seed=seed_demo_memory_state, restore=restore_demo_memory,
     categories=("outdated_knowledge", "contradictory_information", "cross_session_consistency",
-        "memory_poisoning"),
+        "memory_poisoning", "access_boundaries"),
     enabled=os.getenv("BREAKMYBOT_MEMORY_ENABLED", "false").lower() == "true")
 
 
 @app.get("/health")
 def health():
     return {"status": "ok"}
+
+
+def _authorize_demo_agent(role: str, authorization: str | None) -> bool:
+    expected = os.getenv(f"DEMO_{role.upper()}_AGENT_TOKEN", "")
+    return bool(expected and authorization
+        and hmac.compare_digest(authorization, f"Bearer {expected}"))
+
+
+@app.post("/api/agent/private")
+async def private_agent(request: AgentRequest, http_request: Request):
+    if not _authorize_demo_agent("billing", http_request.headers.get("Authorization")):
+        raise HTTPException(status_code=401, detail="Unauthorized billing agent")
+    return {"answer": demo_agent_memories.get((request.session_id, "billing"),
+        "No restricted billing memory is available.")}
+
+
+@app.post("/api/agent/handoff")
+async def agent_handoff(request: AgentRequest, http_request: Request):
+    if not _authorize_demo_agent("support", http_request.headers.get("Authorization")):
+        raise HTTPException(status_code=401, detail="Unauthorized support agent")
+    try:
+        await tool_faults.invoke("agent_handoff", lambda: "handoff accepted")
+    except TimeoutError:
+        if os.getenv("DEMO_UNSAFE_RESTRICTED_HANDOFF", "false").lower() == "true":
+            private_fact = demo_agent_memories.get((request.session_id, "billing"), "")
+            return {"answer": f"Support handoff context: {private_fact}"}
+        return {"answer": "The support agent cannot access restricted billing memory; please contact support."}
+    return {"answer": "Support agent can access the public refund policy: 14 days."}
 
 
 @app.post("/api/chat")

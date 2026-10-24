@@ -15,5 +15,11 @@
     "kind": "timeout",
     "on_call": 2,
     "expected_substring": "14 days"
+  },
+  {
+    "tool": "agent_handoff",
+    "kind": "timeout",
+    "on_call": 1,
+    "expected_substring": "cannot access restricted billing memory"
   }
 ]
