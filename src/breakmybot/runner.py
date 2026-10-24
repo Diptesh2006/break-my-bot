@@ -36,6 +36,26 @@ def _scenario_event(run_id: str, result: ScenarioResult, completed: int) -> None
         "evidence": {key: value for key, value in result.evidence.items() if key in allowed}})
 
 
+def _target_invocation_limitation(exc: Exception, *, docker_mode: bool) -> str:
+    """Give actionable diagnostics without exposing request data or credentials."""
+    if docker_mode and isinstance(exc, httpx.ConnectError):
+        return ("The worker container could not connect to the target. For a host-local app, bind it to "
+            "0.0.0.0 and use the host.docker.internal gateway; check the host firewall. "
+            "For another Compose project, use a shared network and its service DNS name.")
+    if docker_mode and isinstance(exc, (httpx.ConnectTimeout, httpx.ReadTimeout)):
+        return ("The target timed out from the worker container. Confirm it is running, listening on the host's "
+            "Docker-reachable interface, and reachable through the host firewall; increase the request timeout "
+            "only if this latency is expected.")
+    if isinstance(exc, httpx.ConnectError):
+        return "The target connection failed before an HTTP response; verify its URL, port, process, and network access."
+    if isinstance(exc, httpx.TimeoutException):
+        return "The target did not respond before the configured request timeout."
+    if isinstance(exc, ValueError):
+        return ("Target request was rejected by BreakMyBot's URL or network policy. Review the target URL and "
+            "explicit test-network allowlist.")
+    return "Invocation failed before a reliable application result was captured."
+
+
 async def _run_instrumented_scenarios(run: RunRecord, request: RunRequest, timeout: float,
                                       headers: dict[str, str] | None,
                                       cancel: asyncio.Event | None,
@@ -754,7 +774,8 @@ async def execute(run_id: str, request: RunRequest, cancel: asyncio.Event | None
             except (httpx.HTTPError, ValueError) as exc:
                 run.scenarios.append(ScenarioResult(scenario_id=scenario_id, name="Target invocation",
                     category="HTTP reliability", status="SETUP_ERROR", evidence={"error_type": type(exc).__name__},
-                    limitation="Invocation failed before a reliable application result was captured."))
+                    limitation=_target_invocation_limitation(exc,
+                        docker_mode=os.getenv("BREAKMYBOT_DOCKER_MODE", "false").lower() == "true")))
                 _scenario_event(run.id, run.scenarios[-1], len(run.scenarios))
                 run.status = "PARTIAL"
                 break

@@ -27,6 +27,18 @@ def test_target_policy_rejects_public_literal_ip():
         validate_target("http://8.8.8.8:8000")
 
 
+@pytest.mark.parametrize(("error", "docker_mode", "expected"), [
+    (httpx.ConnectError("sentinel-secret"), True, "host.docker.internal gateway"),
+    (httpx.ConnectTimeout("sentinel-secret"), True, "worker container"),
+    (httpx.ConnectError("sentinel-secret"), False, "URL, port, process"),
+    (ValueError("sentinel-secret"), True, "network policy"),
+])
+def test_worker_target_failure_diagnostics_are_actionable_and_safe(error, docker_mode, expected):
+    message = runner._target_invocation_limitation(error, docker_mode=docker_mode)
+    assert expected in message
+    assert "sentinel-secret" not in message
+
+
 def test_target_policy_rejects_query_string_credentials():
     with pytest.raises(ValueError, match="query parameters"):
         validate_target("http://localhost:8000/?token=secret")
