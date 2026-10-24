@@ -117,11 +117,12 @@ def generate(run: RunRecord, output_dir: Path) -> dict[str, str]:
     score = run.scoring.get("overall_score")
     score_text = f"{score}/100" if score is not None else "Not established"
     observed_scopes = ", ".join(run.scoring.get("observed_scopes", [])) or "none"
+    observed_memory = ", ".join(run.scoring.get("observed_memory_categories", [])) or "none"
     html_doc = f"""<!doctype html><html lang="en"><meta charset="utf-8"><title>BreakMyBot report {html.escape(run.id)}</title>
 <style>body{{font:16px system-ui;max-width:1000px;margin:40px auto;padding:0 24px;color:#18212b}}h1{{font-size:34px}}.score{{font-size:32px;color:#a43129}}table{{border-collapse:collapse;width:100%;margin-top:20px}}th,td{{border:1px solid #ccd2d8;padding:10px;text-align:left}}th{{background:#edf1f5}}small{{color:#59636e}}</style>
 <body><h1>BREAKMYBOT</h1><p>AI RELIABILITY ASSESSMENT</p><h2>{html.escape(run.application_name or 'AI application')}</h2><p>Assessment date: {html.escape(run.created_at.isoformat())}</p><p>{html.escape(target_endpoint)}</p>
 <p class="score">{score_text}</p><p>Coverage: {run.scoring.get('coverage_percent', 0)}% · Rubric weight observed: {run.scoring.get('observed_weight_percent', 0)}%</p><p>{html.escape(run.scoring.get('warning', ''))}</p>
-<h2>Executive summary</h2><p>Assessment of {html.escape(run.application_name or 'the connected target')} via {html.escape(run.method)} {html.escape(run.endpoint_path)}. Status: {html.escape(run.status)}. Observed scopes: {html.escape(observed_scopes)}.</p>
+<h2>Executive summary</h2><p>Assessment of {html.escape(run.application_name or 'the connected target')} via {html.escape(run.method)} {html.escape(run.endpoint_path)}. Status: {html.escape(run.status)}. Observed scopes: {html.escape(observed_scopes)}. Confirmed target memory categories: {html.escape(observed_memory)}.</p>
 <h2>Category scorecard</h2><table><thead><tr><th>Category</th><th>Score</th><th>Coverage</th><th>Conclusive</th></tr></thead><tbody>{category_rows}</tbody></table>
 <h2>Findings</h2>{finding_rows}
 <h2>Scenario planning hypotheses</h2><table><thead><tr><th>Proposal</th><th>Hypothesis</th><th>Capability gate</th><th>Execution</th></tr></thead><tbody>{plan_rows}</tbody></table>
@@ -139,6 +140,7 @@ def generate(run: RunRecord, output_dir: Path) -> dict[str, str]:
              Paragraph(html.escape(target_endpoint), styles["BodyText"]),
              Paragraph(f"Score: {score_text} · Coverage: {run.scoring.get('coverage_percent', 0)}% · Rubric weight observed: {run.scoring.get('observed_weight_percent', 0)}%", styles["Heading2"]),
              Paragraph("Observed scopes: " + html.escape(observed_scopes), styles["BodyText"]),
+             Paragraph("Confirmed target memory categories: " + html.escape(observed_memory), styles["BodyText"]),
              Paragraph(html.escape(run.scoring.get("warning", "")), styles["BodyText"]), Spacer(1, 12)]
     category_data = [["Category", "Score", "Coverage", "Conclusive"]]
     category_data.extend([

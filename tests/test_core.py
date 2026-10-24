@@ -741,6 +741,34 @@ def test_score_lists_observed_instrumentation_and_removes_it_from_untested():
     assert "internal tool fault injection" not in score["untested_capabilities"]
 
 
+def test_scoring_lists_only_cleanup_confirmed_target_memory_categories_as_observed():
+    run = RunRecord(target_url="http://localhost:8000", endpoint_path="/chat", method="POST", profile="quick")
+    run.scenarios = [
+        ScenarioResult(scenario_id="memory-boundary", name="Restricted handoff", category="Security",
+            status="PASSED", evidence={"memory_category": "access_boundaries", "cleanup_succeeded": True}),
+        ScenarioResult(scenario_id="memory-unclean", name="Unconfirmed restore", category="Memory integrity",
+            status="VERIFIED_FAILURE", evidence={"memory_category": "memory_poisoning", "cleanup_succeeded": False}),
+        ScenarioResult(scenario_id="memory-unsupported", name="Cross-agent", category="Memory integrity",
+            status="UNSUPPORTED", evidence={"memory_category": "cross_agent_memory", "cleanup_succeeded": True}),
+    ]
+    score = calculate(run)
+    assert score["observed_memory_categories"] == ["access_boundaries"]
+    assert "target-instrumented memory scenarios" in score["observed_scopes"]
+    assert "memory category: access_boundaries" not in score["untested_capabilities"]
+    assert "memory category: memory_poisoning" in score["untested_capabilities"]
+    assert "memory category: cross_agent_memory" in score["untested_capabilities"]
+    assert "memory state persistence across target restarts" in score["untested_capabilities"]
+
+
+def test_default_black_box_report_does_not_claim_memory_categories_observed():
+    run = RunRecord(target_url="http://localhost:8000", endpoint_path="/chat", method="POST", profile="quick")
+    run.scenarios = [ScenarioResult(scenario_id="unsupported-access", name="Access boundary",
+        category="Security", status="UNSUPPORTED", evidence={"memory_category": "access_boundaries"})]
+    score = calculate(run)
+    assert score["observed_memory_categories"] == []
+    assert "memory category: access_boundaries" in score["untested_capabilities"]
+
+
 def test_setup_errors_do_not_claim_an_observed_scope():
     run = RunRecord(target_url="http://localhost:8000", endpoint_path="/chat", method="POST", profile="standard")
     run.scenarios = [ScenarioResult(scenario_id="setup", name="setup", category="HTTP reliability",
@@ -807,6 +835,27 @@ def test_report_outputs_are_portable_and_include_limitations(tmp_path: Path):
     Draft202012Validator(schema, format_checker=FormatChecker()).validate(report_json)
     assert report_json["report_schema_version"] == "1.0.0"
     assert report_json["report_paths"] == {"html": "report.html", "pdf": "report.pdf", "json": "report.json"}
+
+
+def test_memory_scope_summary_matches_api_and_portable_reports(tmp_path: Path):
+    from pypdf import PdfReader
+
+    run = RunRecord(target_url="http://localhost:8000", endpoint_path="/api/agent/private",
+        method="POST", profile="quick")
+    run.scenarios = [ScenarioResult(scenario_id="memory-restricted-handoff",
+        name="Restricted memory handoff", category="Security", status="PASSED",
+        evidence={"memory_category": "access_boundaries", "cleanup_succeeded": True})]
+    run.scoring = calculate(run)
+    assert run.scoring["observed_memory_categories"] == ["access_boundaries"]
+    assert "memory category: access_boundaries" not in run.scoring["untested_capabilities"]
+    paths = generate(run, tmp_path)
+    html_report = Path(paths["html"]).read_text(encoding="utf-8")
+    report_json = json.loads(Path(paths["json"]).read_text(encoding="utf-8"))
+    pdf_text = " ".join(page.extract_text() or "" for page in PdfReader(paths["pdf"]).pages)
+    assert "Confirmed target memory categories: access_boundaries" in html_report
+    assert report_json["scoring"]["observed_memory_categories"] == ["access_boundaries"]
+    assert "Confirmed target memory categories: access_boundaries" in pdf_text
+    assert "memory category: cross_agent_memory" in report_json["scoring"]["untested_capabilities"]
 
 
 def test_report_surfaces_investigator_findings_as_unscored_hypotheses(tmp_path: Path):

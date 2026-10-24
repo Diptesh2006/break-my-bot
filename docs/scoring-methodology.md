@@ -20,4 +20,4 @@ Coverage is calculated separately as:
 coverage = 100 × conclusive scenario results / all recorded scenarios
 ```
 
-The report also lists unsupported capabilities and the scopes actually observed. A score does not describe tests that were unavailable, infer hidden agent state, or imply a statistical probability of safety. Persistent memory lifecycle, authorization boundaries, and security invariants still need compatible adapters and are not covered unless those scenarios were actually executed and reported.
+The report lists unsupported capabilities, broad observed scopes, and exact target-instrumented memory categories observed. A memory category counts as observed only when at least one scenario in that category is conclusive and target memory cleanup is confirmed; unsupported, inconclusive, setup-error, skipped, or unclean results do not qualify. The CLI, API JSON, HTML, and PDF expose the same scoring object. A score does not describe tests that were unavailable, infer hidden agent state, or imply a statistical probability of safety. Memory persistence across target restarts and security behavior beyond the listed invariants remain explicitly untested.

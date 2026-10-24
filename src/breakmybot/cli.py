@@ -316,6 +316,15 @@ def test(
     console.print(f"\n[bold]BREAKMYBOT - TEST {run['status']}[/bold]")
     console.print(f"Observed reliability score: {score}/100" if score is not None else "Observed reliability score: Not established")
     console.print(f"Coverage: {run['scoring'].get('coverage_percent', 0)}%")
+    observed_scopes = run["scoring"].get("observed_scopes", [])
+    if observed_scopes:
+        console.print("Observed scopes: " + ", ".join(observed_scopes))
+    observed_memory = run["scoring"].get("observed_memory_categories", [])
+    if observed_memory:
+        console.print("Confirmed target memory categories: " + ", ".join(observed_memory))
+    untested = run["scoring"].get("untested_capabilities", [])
+    if untested:
+        console.print("Not tested: " + "; ".join(untested))
     executed_plans = sum(bool(item.get("executed")) for item in run.get("planning", {}).get("scenarios", []))
     execution_note = f"{executed_plans} generated scenarios executed" if execute_planned_scenarios else "proposals not executed"
     console.print(f"Scenario planner: {run.get('planning', {}).get('status', 'not requested')} ({len(run.get('planning', {}).get('scenarios', []))} proposals; {execution_note})")

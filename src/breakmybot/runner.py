@@ -457,7 +457,8 @@ async def _run_memory_scenarios(request: RunRequest, timeout: float,
                 fault_injected = _contains_ordered_faults(observed_faults, expected_faults) if scenario.faults else None
                 if cleanup_ok and scenario.faults and not fault_injected and state not in {"SETUP_ERROR", "SKIPPED"}:
                     state = "INCONCLUSIVE"
-                evidence = {"steps": step_evidence, "cleanup_succeeded": cleanup_ok}
+                evidence = {"steps": step_evidence, "cleanup_succeeded": cleanup_ok,
+                    "memory_category": scenario.category}
                 if scenario.faults:
                     evidence.update({"memory_cleanup_succeeded": memory_cleanup_ok,
                         "tool_cleanup_succeeded": tool_cleanup_ok, "fault_injected": fault_injected,

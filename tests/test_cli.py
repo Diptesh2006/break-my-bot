@@ -20,7 +20,10 @@ def test_cli_queues_assessment_without_sending_a_duplicate_preflight(monkeypatch
             return {"id": "run-cli-test", "status": "COMPLETED",
                 "scoring": {"overall_score": None, "coverage_percent": 0,
                     "warning": "Insufficient evidence", "scenario_counts": {
-                        "PASSED": 0, "VERIFIED_FAILURE": 0, "UNSUPPORTED": 0}},
+                        "PASSED": 0, "VERIFIED_FAILURE": 0, "UNSUPPORTED": 0},
+                    "observed_scopes": ["target-instrumented memory scenarios"],
+                    "observed_memory_categories": ["access_boundaries"],
+                    "untested_capabilities": ["memory category: cross_agent_memory"]},
                 "planning": {"status": "not_requested", "scenarios": []},
                 "report_paths": {"json": "report.json", "html": "report.html", "pdf": "report.pdf"}}
         raise AssertionError(f"Unexpected API request: {method} {path}")
@@ -33,6 +36,8 @@ def test_cli_queues_assessment_without_sending_a_duplicate_preflight(monkeypatch
 
     assert result.exit_code == 0, result.output
     assert "worker will perform the baseline invocation" in result.output
+    assert "Confirmed target memory categories: access_boundaries" in result.output
+    assert "memory category: cross_agent_memory" in result.output
     assert not any(path == "/api/targets/preflight" for _method, path, _kwargs in calls)
     run_creates = [kwargs["json"] for method, path, kwargs in calls
         if method == "POST" and path == "/api/runs"]
