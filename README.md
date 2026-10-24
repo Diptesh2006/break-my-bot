@@ -2,52 +2,48 @@
 
 **We break your AI so your users don't have to.**
 
-BreakMyBot stress-tests AI applications you control. LLMs help plan and interpret targeted evaluations; reproducible observations—not model opinions—determine the results.
+An agent can ace a demo and still fail when a tool stalls, a retry repeats a write, or yesterday's answer collides with today's memory. BreakMyBot turns those edge cases into controlled, inspectable experiments against an AI app you own.
 
-## What it does
+## From prompt to proof
 
-It discovers routes, checks behavior and contracts, evaluates your reference cases with a built-in LLM judge, and can test tool or memory failures when your app installs the optional adapters. Scores are deterministic and grounded in observed evidence; LLM-generated plans and findings remain hypotheses.
+BreakMyBot combines LLM reasoning with evidence-locked evaluation:
 
-LLM reasoning is central: configure a provider and approve each run to enable planning and judging. nRouter is the MVP default; OpenAI, OpenRouter, Groq, Gemini, Mistral, DeepSeek, and compatible gateways are also supported. See [`.env.example`](.env.example) and the [semantic judge guide](docs/semantic-judge.md).
+- **Investigate:** an LLM helps find promising tests and interpret reference cases. nRouter is the MVP default; OpenAI, OpenRouter, Groq, Gemini, Mistral, DeepSeek, and OpenAI-compatible gateways are supported.
+- **Exercise:** check routes, response contracts, latency, and repeat behavior. Optional target-installed adapters expose real tool-fault and memory scenarios; hidden internals are never guessed at.
+- **Verify:** scores come from observed responses, explicit oracles, and confirmed adapter events—not an LLM's confidence. Unsupported coverage stays visible as unsupported.
+- **Review:** inspect run evidence and reports in the API, CLI, and dashboard.
 
-BreakMyBot runs standalone; [Turbulence](https://github.com/Diptesh2006/turbulence) and [MemoryScope](https://github.com/Diptesh2006/MemoryScope) are optional integrations, not dependencies. See [integration details](docs/integration-boundaries.md).
+Configure a provider and approve each AI-assisted run. Without credentials—or when consent is declined—deterministic checks still work and no model call is made. See [provider setup](docs/semantic-judge.md) and [scoring](docs/scoring-methodology.md).
 
-## Quick start
+BreakMyBot is a complete, standalone product. [Turbulence](https://github.com/Diptesh2006/turbulence) and [MemoryScope](https://github.com/Diptesh2006/MemoryScope) are optional, separately operated integrations—not prerequisites. The integration guide explains exactly what each can and cannot prove.
 
-Requires Python 3.11+. For the full stack, install Docker Compose, then:
+## Run it locally
+
+Requires Python 3.11+ and Docker Compose. Keep your AI app running on port `8001` so it doesn't collide with BreakMyBot's API:
 
 ```powershell
 git clone https://github.com/Diptesh2006/break-my-bot.git
 cd break-my-bot
 Copy-Item .env.example .env
-# Edit .env and replace POSTGRES_PASSWORD with a strong private password.
+# Set a private POSTGRES_PASSWORD. Add nRouter credentials/models for AI-assisted runs.
 docker compose up -d --build
-```
 
-The API is at `http://127.0.0.1:8000` and dashboard at `http://127.0.0.1:3000`. Compose health checks wait for PostgreSQL, the API, and the dashboard to become responsive; inspect startup with `docker compose ps`. Configure your provider in the API and worker environments. To test an app you control:
-
-```powershell
 python -m venv .venv
 .\.venv\Scripts\Activate.ps1
 python -m pip install -e .
-breakmybot test --url http://localhost:8000
+breakmybot doctor
+breakmybot test --url http://localhost:8001
 ```
 
-Use `breakmybot doctor` to check API reachability, configured storage/queue backends, and model-provider configuration. It does not claim the background worker process is alive.
+The API is at `http://127.0.0.1:8000`; the dashboard is at `http://127.0.0.1:3000`. To test a chat route, pass `--endpoint /api/chat --payload-json '{"message":"What is the refund policy?"}' --expected "14 days"`. Targets must be loopback or explicitly allowlisted. Only test systems you control. Writes, repeated calls, provider data sharing, and fault injection require opt-in; the local dashboard has no authentication and should not be exposed publicly.
 
-Or target a chat endpoint:
+No Docker? Install the package with `python -m pip install -e .`, then run `uvicorn breakmybot.api:app --host 127.0.0.1 --port 8000` and `python -m breakmybot.worker` in separate terminals. The [bundled demo](benchmarks/README.md) shows a real timeout-recovery evaluation.
 
-```powershell
-breakmybot test --url http://localhost:8000 --endpoint /api/chat --payload-json '{"message":"What is the refund policy?"}' --expected "14 days"
-```
+## What's next
 
-Without Docker, install with `python -m pip install -e .` and run `uvicorn breakmybot.api:app --host 127.0.0.1 --port 8000` plus `python -m breakmybot.worker` in separate terminals. Try the [bundled demo](benchmarks/README.md).
+Planned—not shipped: broader first-party adapters for more agent and persistent-memory stacks; a target-aware network/dependency fault proxy that can connect to Turbulence; and larger, repeatable benchmark suites for comparing models and strategies. Today, a hidden capability is reported as untested—not simulated into a passing score.
 
-## Safety and limits
-
-Test only systems you control. Writes, repeated calls, provider sharing, and fault injection require opt-in. Targets must be loopback or allowlisted. Hidden tools and memory require adapters. Scores are evidence, not safety certifications. The local dashboard has no authentication; do not expose it publicly.
-
-## Development
+## Build and explore
 
 ```powershell
 python -m pip install -e ".[dev]"
@@ -55,4 +51,4 @@ python -m pytest -q
 ruff check src tests examples benchmarks
 ```
 
-See [scoring](docs/scoring-methodology.md), [memory adapters](docs/memory-adapter.md), and [verification and limits](docs/final-verification.md) for details.
+Read the [memory adapter contract](docs/memory-adapter.md), [integration boundaries](docs/integration-boundaries.md), or the [reference-repository audit](docs/reference-audit.md). See [CONTRIBUTING](CONTRIBUTING.md) to help build the next failure mode into a test.
