@@ -386,6 +386,8 @@ async def preflight(url: str, path: str, method: str, payload: dict, *, docker_m
 
 async def invoke(url: str, path: str, method: str, payload: dict, timeout: float, *, docker_mode: bool = False,
                  headers: dict[str, str] | None = None) -> tuple[int, str, float, str]:
+    # Validate the operator-supplied URL before host-gateway translation can normalize it.
+    validate_target(url)
     base = docker_resolve_url(url) if docker_mode else url
     target = urljoin(base.rstrip("/") + "/", path.lstrip("/"))
     validate_target(target)

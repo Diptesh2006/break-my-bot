@@ -859,6 +859,16 @@ def test_docker_loopback_translation_preserves_target_path_without_query_or_frag
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("suffix", ["?token=unsafe", "#fragment"])
+async def test_docker_invocation_rejects_original_url_query_and_fragment(suffix):
+    from breakmybot.target import invoke
+
+    with pytest.raises(ValueError, match="query parameters"):
+        await invoke(f"http://localhost:8000/{suffix}", "/api/chat", "POST", {}, 1,
+            docker_mode=True)
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("error, expected_hint", [
     (httpx.ConnectError("refused"), "bound to 0.0.0.0"),
     (httpx.ConnectTimeout("timeout"), "host firewall"),
