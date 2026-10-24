@@ -17,6 +17,12 @@ Configure a provider and approve each AI-assisted run. Without credentials—or 
 
 BreakMyBot is a complete, standalone product. [Turbulence](https://github.com/Diptesh2006/turbulence) and [MemoryScope](https://github.com/Diptesh2006/MemoryScope) are optional, separately operated integrations—not prerequisites. The integration guide explains exactly what each can and cannot prove.
 
+## How it fits among agent eval tools
+
+[LangSmith](https://www.langchain.com/langsmith/evaluation) and [Braintrust](https://www.braintrust.dev/manifesto) emphasize datasets, experiments, traces, and the ongoing evaluation loop. [Inspect AI](https://inspect.aisi.org.uk/) is a composable framework for authoring and running a broad range of evaluations. [Promptfoo](https://www.promptfoo.dev/docs/red-team/agents/) is a close neighbor for configurable app evaluations and red teaming, including agent and tool-trajectory testing. These tools overlap with BreakMyBot; none should be reduced to “just a judge.”
+
+BreakMyBot's narrower focus is a self-hosted test bench for an **already-running app you control**: exercise its HTTP boundary, then—only if the app opts in—inject tool faults or test memory through target-owned hooks. Behavioral pass/fail claims need an explicit oracle; injected-fault results also need target-confirmed injection and cleanup. Pick BreakMyBot when that operational failure-and-recovery workflow matters; use broader eval or observability platforms for their richer dataset, trace, collaboration, or production-monitoring workflows.
+
 ## Run it locally
 
 Requires Python 3.11+ and Docker Compose. Keep your AI app running on port `8001` so it doesn't collide with BreakMyBot's API:
